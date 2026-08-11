@@ -46,6 +46,14 @@ from ..results import VideoMatchList
 from ..vision.io import read_image
 
 
+def _rate_limit_due(last_emitted_at: float | None, now: float, interval: float) -> bool:
+    return last_emitted_at is None or now - last_emitted_at >= interval
+
+
+def _final_preview_due(reached_end: bool, frame_index: int, last_preview_frame_index: int) -> bool:
+    return reached_end and frame_index > 0 and last_preview_frame_index != frame_index
+
+
 class EnrollmentDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -117,6 +125,9 @@ class PersonInfoDialog(QDialog):
 
 
 class VideoWorker(QThread):
+    PREVIEW_INTERVAL_SECONDS = 1.0 / 15.0
+    STATS_INTERVAL_SECONDS = 1.0
+
     frame_ready = Signal(QImage)
     recognized = Signal(dict)
     stats = Signal(str)
@@ -176,18 +187,22 @@ class VideoWorker(QThread):
             return
         self.engine.reset_video()
         frame_index = 0
+        last_frame: object | None = None
         last_result: FrameResult | None = None
         reported_scores: dict[tuple[int, str], float] = {}
         started = time.perf_counter()
-        file_source = isinstance(capture_source, str) and not capture_source.lower().startswith(("rtsp://", "rtmp://"))
-        source_fps = capture.get(cv2.CAP_PROP_FPS) if file_source else 0.0
+        last_preview_at: float | None = None
+        last_preview_frame_index = 0
+        last_stats_at = started
+        reached_end = False
         try:
             while self._running:
-                loop_started = time.perf_counter()
                 ok, frame = capture.read()
                 if not ok:
+                    reached_end = True
                     break
                 frame_index += 1
+                last_frame = frame
                 if frame_index == 1 or frame_index % self.frame_interval == 0:
                     last_result = self.engine.process_frame(frame, frame_index)
                     for track in last_result.tracks:
@@ -210,15 +225,21 @@ class VideoWorker(QThread):
                                     "new_track_match": previous_score is None,
                                 }
                             )
-                self.frame_ready.emit(self._qimage(frame, last_result))
-                if frame_index % 15 == 0:
-                    elapsed = max(time.perf_counter() - started, 1e-6)
+                now = time.perf_counter()
+                if _rate_limit_due(last_preview_at, now, self.PREVIEW_INTERVAL_SECONDS):
+                    self.frame_ready.emit(self._qimage(frame, last_result))
+                    last_preview_at = now
+                    last_preview_frame_index = frame_index
+                if _rate_limit_due(last_stats_at, now, self.STATS_INTERVAL_SECONDS):
+                    elapsed = max(now - started, 1e-6)
                     faces = last_result.detected_faces if last_result else 0
                     self.stats.emit(f"GPU 推理中 · {frame_index / elapsed:.1f} FPS · 当前 {faces} 张人脸")
-                if file_source and source_fps > 1.0:
-                    remaining = 1.0 / source_fps - (time.perf_counter() - loop_started)
-                    if remaining > 0:
-                        self.msleep(int(remaining * 1000))
+                    last_stats_at = now
+            if (
+                last_frame is not None
+                and _final_preview_due(reached_end, frame_index, last_preview_frame_index)
+            ):
+                self.frame_ready.emit(self._qimage(last_frame, last_result))
         except Exception as exc:
             self.failed.emit(str(exc))
         finally:
@@ -254,7 +275,7 @@ class MainWindow(QMainWindow):
             except ModelMissingError:
                 if is_frozen_app():
                     raise ModelMissingError(
-                        "离线便携包缺少当前模型。请使用完整的 v2.4 离线包，"
+                        "离线便携包缺少当前模型。请使用完整的 v2.5 离线包，"
                         "或在联网构建机上重新打包；目标机不会尝试联网下载。"
                     )
                 profile = profile_spec(self.config.model_profile)

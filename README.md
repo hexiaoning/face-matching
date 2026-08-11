@@ -1,6 +1,6 @@
 # Face Matching
 
-Windows 11 桌面端监控视频人脸识别。人员库保存“姓名 + 身份证号 + 1～多张照片”，界面支持本地视频、摄像头、RTSP/RTMP 视频流，识别结果会在视频上标注。`v2.4` 为每个命中人员保留整段视频的最高 score，并在匹配列表中按 score 倒序输出。
+Windows 11 桌面端监控视频人脸识别。人员库保存“姓名 + 身份证号 + 1～多张照片”，界面支持本地视频、摄像头、RTSP/RTMP 视频流，识别结果会在视频上标注。`v2.5` 为每个命中人员保留整段视频的最高 score，并在匹配列表中按 score 倒序输出；本地视频文件会按机器性能尽快处理，界面预览限制为 15 FPS，避免高速处理时积压图像。
 
 > 这是 **GPU-only** 应用。NVIDIA 使用 ONNX Runtime CUDA，Intel 核显/Arc 使用 OpenVINO GPU FP32；两种后端都禁止神经网络回退 CPU。`auto` 优先 CUDA，再选 OpenVINO。视频解码、跟踪管理、SQLite 和 GUI 等非神经网络工作仍由 CPU 执行。
 
@@ -36,9 +36,9 @@ Windows 11 桌面端监控视频人脸识别。人员库保存“姓名 + 身份
 .\scripts\build_offline_bundle.ps1 -Clean -AcceptResearchWeights
 ```
 
-构建脚本会先跑测试，下载并校验固定 SHA-256 的模型，然后把 Python、PySide6、OpenCV、CUDA/OpenVINO GPU 运行库和两套模型一并打入 `dist\FaceMatching-v2.4.0-windows-x64.zip`。目标机不需要 Python、CUDA Toolkit、OpenVINO Toolkit 或互联网；只需预装对应显卡驱动。
+构建脚本会先跑测试，下载并校验固定 SHA-256 的模型，然后把 Python、PySide6、OpenCV、CUDA/OpenVINO GPU 运行库和两套模型一并打入 `dist\FaceMatching-v2.5.0-windows-x64.zip`。目标机不需要 Python、CUDA Toolkit、OpenVINO Toolkit 或互联网；只需预装对应显卡驱动。
 
-目标机可直接双击 `FaceMatching-v2.4.0-Setup.exe` 安装；也可解压便携 ZIP 后双击 `安装并启动 Face Matching.cmd`，自动校验完整性、GPU 和模型后启动。两种方式都不会调用 `winget` 或 `pip`。
+目标机可直接双击 `FaceMatching-v2.5.0-Setup.exe` 安装；也可解压便携 ZIP 后双击 `安装并启动 Face Matching.cmd`，自动校验完整性、GPU 和模型后启动。两种方式都不会调用 `winget` 或 `pip`。
 
 > NVIDIA 显卡驱动是与机器/系统绑定的设备组件，不随应用包分发；其余应用运行依赖和模型均包含在离线包中。包含 LVFace-B 权重前必须接受其非商业研究限制；商业部署可只构建 `auraface`。
 
