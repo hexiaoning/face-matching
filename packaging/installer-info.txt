@@ -1,0 +1,7 @@
+Face Matching v2.4.0 是完全离线的 GPU 人脸比对应用。
+
+目标机不需要网络、Python、winget、CUDA Toolkit、cuDNN 或 OpenVINO Toolkit；只需安装对应的 NVIDIA 或 Intel 显卡驱动。
+
+默认 LVFace-B 预训练权重仅限非商业研究。商业部署请在设置中使用 AuraFace，并重建人员库特征。
+
+身份证号和人脸特征属于敏感个人信息。请在受控的内部 Windows 11 环境部署，并配置访问控制、磁盘加密、审计和保留期。

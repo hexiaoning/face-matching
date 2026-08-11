@@ -15,6 +15,8 @@ if os.name == "nt":
         bundle_root / "nvidia" / "cuda_runtime" / "bin",
         bundle_root / "nvidia" / "cublas" / "bin",
         bundle_root / "nvidia" / "cudnn" / "bin",
+        bundle_root / "nvidia" / "cufft" / "bin",
+        bundle_root / "nvidia" / "curand" / "bin",
         bundle_root / "nvidia" / "nvjitlink" / "bin",
         bundle_root / "onnxruntime" / "capi",
     )

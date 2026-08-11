@@ -5,8 +5,13 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$AppRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$AppRoot = $ScriptRoot
 $Executable = Join-Path $AppRoot "FaceMatching.exe"
+if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
+    $AppRoot = Split-Path -Parent $ScriptRoot
+    $Executable = Join-Path $AppRoot "FaceMatching.exe"
+}
 if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
     throw "FaceMatching.exe is missing from the offline bundle."
 }

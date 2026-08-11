@@ -39,6 +39,8 @@ for module_name in (
     "nvidia.cuda_runtime",
     "nvidia.cublas",
     "nvidia.cudnn",
+    "nvidia.cufft",
+    "nvidia.curand",
     "nvidia.nvjitlink",
 ):
     if module_available(module_name):
@@ -58,6 +60,8 @@ for distribution in (
     "nvidia-cuda-runtime-cu12",
     "nvidia-cublas-cu12",
     "nvidia-cudnn-cu12",
+    "nvidia-cufft-cu12",
+    "nvidia-curand-cu12",
     "nvidia-nvjitlink-cu12",
 ):
     try:

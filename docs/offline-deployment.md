@@ -25,13 +25,21 @@
 - 构建时选择且经过 SHA-256 校验的 SCRFD/LVFace/AuraFace ONNX 模型；
 - 离线自检脚本和第三方许可说明。
 
+如需生成可直接双击的安装程序，联网构建机安装 Inno Setup 6 后运行：
+
+```powershell
+.\scripts\build_windows_installer.ps1
+```
+
+产物为 `dist\FaceMatching-v2.4.0-Setup.exe`。
+
 ## 目标机
 
 目标机要求 Windows 11 x64，以及 NVIDIA RTX 或 Intel UHD/Iris/Arc GPU 和对应显卡驱动。
 
-1. 用 `.sha256` 核对 ZIP，解压到本机目录。
-2. 在 PowerShell 运行 `verify_offline.ps1`。它会自动发现包内 profile，逐模型校验哈希，并在自动选中的 CUDA/OpenVINO GPU 上执行真实推理；任何 CPU fallback 都会直接失败。
-3. 双击 `FaceMatching.exe`。
+1. 优先双击 `FaceMatching-v2.4.0-Setup.exe`，按向导安装后启动。
+2. 如使用便携 ZIP，解压后双击 `安装并启动 Face Matching.cmd`。它会自动校验包、GPU 和模型，通过后直接启动。
+3. `verify_offline.ps1` 仅保留给运维人员单独诊断；普通用户无需运行。
 
 人员数据库和录入照片默认写入 `%LOCALAPPDATA%\FaceMatching`，应用升级不会覆盖。需要把数据放到加密盘时，在启动前设置 `FACE_MATCHING_HOME`。
 

@@ -110,6 +110,8 @@ finally {
 if (-not (Test-Path -LiteralPath (Join-Path $ReleaseDirectory "FaceMatching.exe") -PathType Leaf)) {
     throw "PyInstaller did not create the expected offline release directory."
 }
+Copy-Item -LiteralPath (Join-Path $ProjectRoot "packaging\安装并启动 Face Matching.cmd") `
+    -Destination (Join-Path $ReleaseDirectory "安装并启动 Face Matching.cmd") -Force
 
 Write-Host "[5/5] Creating a Zip64 archive and SHA-256 manifests..." -ForegroundColor Cyan
 Invoke-CheckedPython -Arguments @((Join-Path $ProjectRoot "scripts\create_release_archive.py"), $ReleaseDirectory, $Archive)
