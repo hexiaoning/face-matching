@@ -109,12 +109,7 @@ class SCRFDDetector:
             value = value[0]
         return value
 
-    def detect(
-        self,
-        image: np.ndarray,
-        max_faces: int = 100,
-        threshold: float | None = None,
-    ) -> list[Detection]:
+    def detect(self, image: np.ndarray, max_faces: int = 100) -> list[Detection]:
         if image is None or image.size == 0:
             return []
         input_width, input_height = self.input_size
@@ -133,7 +128,6 @@ class SCRFDDetector:
         bbox_chunks: list[np.ndarray] = []
         landmark_chunks: list[np.ndarray] = []
         fmc = self.feature_map_count
-        score_threshold = self.threshold if threshold is None else float(threshold)
         for index, stride in enumerate(self.strides):
             scores = self._remove_batch(outputs[index]).reshape(-1)
             bbox_predictions = self._remove_batch(outputs[index + fmc]).reshape(-1, 4) * stride
@@ -141,7 +135,7 @@ class SCRFDDetector:
             height, width = input_height // stride, input_width // stride
             centers = self._anchor_centers(height, width, stride)
             usable = min(len(scores), len(bbox_predictions), len(landmark_predictions), len(centers))
-            positive = np.where(scores[:usable] >= score_threshold)[0]
+            positive = np.where(scores[:usable] >= self.threshold)[0]
             if positive.size == 0:
                 continue
             score_chunks.append(scores[positive])
@@ -163,93 +157,3 @@ class SCRFDDetector:
             Detection(candidates[index, :4].copy(), float(candidates[index, 4]), landmarks[index].copy())
             for index in keep
         ]
-
-    def detect_reference(self, image: np.ndarray, max_faces: int = 100) -> list[Detection]:
-        """Detect a face in a still portrait even when it is cropped very tightly.
-
-        Adding neutral canvas around a portrait restores the face-to-image scale
-        expected by SCRFD. No facial pixels are generated, and all geometry is
-        mapped back to the original photo before it is returned.
-        """
-        if image is None or image.size == 0:
-            return []
-        image_height, image_width = image.shape[:2]
-        reference_threshold = min(self.threshold, 0.25)
-        candidates = list(
-            self.detect(image, max_faces=max_faces, threshold=reference_threshold)
-        )
-        longest_side = max(image_height, image_width)
-        for ratio in (0.25, 0.50):
-            padding = max(1, int(round(longest_side * ratio)))
-            padded = cv2.copyMakeBorder(
-                image,
-                padding,
-                padding,
-                padding,
-                padding,
-                cv2.BORDER_CONSTANT,
-                value=(127, 127, 127),
-            )
-            box_offset = np.asarray(
-                (padding, padding, padding, padding), dtype=np.float32
-            )
-            point_offset = np.asarray((padding, padding), dtype=np.float32)
-            for detection in self.detect(
-                padded, max_faces=max_faces, threshold=reference_threshold
-            ):
-                box = np.asarray(detection.bbox, dtype=np.float32) - box_offset
-                center_x = float((box[0] + box[2]) * 0.5)
-                center_y = float((box[1] + box[3]) * 0.5)
-                if not (0.0 <= center_x < image_width and 0.0 <= center_y < image_height):
-                    continue
-                original_area = max(
-                    float(box[2] - box[0]) * float(box[3] - box[1]), 1.0
-                )
-                clipped = box.copy()
-                clipped[[0, 2]] = np.clip(clipped[[0, 2]], 0, image_width - 1)
-                clipped[[1, 3]] = np.clip(clipped[[1, 3]], 0, image_height - 1)
-                visible_area = max(
-                    float(clipped[2] - clipped[0])
-                    * float(clipped[3] - clipped[1]),
-                    0.0,
-                )
-                if visible_area / original_area < 0.55:
-                    continue
-                candidates.append(
-                    Detection(
-                        clipped,
-                        detection.score,
-                        np.asarray(detection.landmarks, dtype=np.float32) - point_offset,
-                    )
-                )
-
-        # The context scales normally rediscover the same face. Keep the most
-        # confident mapped detection from each overlap cluster.
-        kept: list[Detection] = []
-        for candidate in sorted(candidates, key=lambda item: item.score, reverse=True):
-            box = candidate.bbox
-            duplicate = False
-            for existing in kept:
-                other = existing.bbox
-                x1 = max(float(box[0]), float(other[0]))
-                y1 = max(float(box[1]), float(other[1]))
-                x2 = min(float(box[2]), float(other[2]))
-                y2 = min(float(box[3]), float(other[3]))
-                intersection = max(0.0, x2 - x1) * max(0.0, y2 - y1)
-                box_area = max(0.0, float(box[2] - box[0])) * max(
-                    0.0, float(box[3] - box[1])
-                )
-                other_area = max(0.0, float(other[2] - other[0])) * max(
-                    0.0, float(other[3] - other[1])
-                )
-                overlap = intersection / max(
-                    box_area + other_area - intersection, 1e-9
-                )
-                if overlap >= self.nms_threshold:
-                    duplicate = True
-                    break
-            if not duplicate:
-                kept.append(candidate)
-                if len(kept) >= max_faces:
-                    break
-        return kept

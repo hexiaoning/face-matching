@@ -41,32 +41,3 @@ def align_face(image: np.ndarray, landmarks: np.ndarray, size: int = 112) -> np.
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=0,
     )
-
-
-def align_face_variants(
-    image: np.ndarray,
-    landmarks: np.ndarray,
-    horizontal_offsets: tuple[float, ...] = (-2.0, 0.0, 2.0),
-) -> list[np.ndarray]:
-    """Build a small reference template set robust to five-point landmark noise.
-
-    Surveillance probes stay on the official ArcFace alignment.  Only the
-    one-off target photo gets nearby deterministic alignments, so the added
-    recall does not multiply video inference cost.
-    """
-    variants: list[np.ndarray] = []
-    for offset in horizontal_offsets:
-        destination = ARCFACE_TEMPLATE.copy()
-        destination[:, 0] += float(offset)
-        matrix = estimate_similarity_transform(landmarks, destination)
-        variants.append(
-            cv2.warpAffine(
-                image,
-                matrix,
-                (112, 112),
-                flags=cv2.INTER_LINEAR,
-                borderMode=cv2.BORDER_CONSTANT,
-                borderValue=0,
-            )
-        )
-    return variants

@@ -1,4 +1,4 @@
-Face Matching v3.4.0 是完全离线的 GPU 目标人物视频检索应用。
+Face Matching v2.4.0 是完全离线的 GPU 人脸比对应用。
 
 目标机不需要网络、Python、winget、CUDA Toolkit、cuDNN 或 OpenVINO Toolkit；只需安装对应的 NVIDIA 或 Intel 显卡驱动。
 
