@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "face-matching"
-version = "0.1.0"
+version = "0.2.2"
 description = "CUDA-only surveillance video face matching desktop application"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3", "pytest-cov>=6"]
+release = ["pyinstaller>=6.15,<7"]
 
 [project.scripts]
 face-matching = "face_matching.app:main"
@@ -32,3 +33,4 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+pythonpath = ["src"]

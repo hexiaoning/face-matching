@@ -20,6 +20,7 @@ def test_materialize_verifies_hash_and_extracts_selected_model(tmp_path) -> None
         destination="detector.onnx",
         size=archive_path.stat().st_size,
         sha256=hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+        destination_sha256=hashlib.sha256(model_bytes).hexdigest(),
         zip_member_suffix="det_10g.onnx",
     )
     destination = tmp_path / "output" / spec.destination
@@ -43,6 +44,24 @@ def test_materialize_rejects_bad_checksum(tmp_path) -> None:
 
     with pytest.raises(RuntimeError, match="checksum mismatch"):
         _materialize(spec, download, tmp_path / spec.destination)
+
+
+def test_materialize_rejects_bad_extracted_model_checksum(tmp_path) -> None:
+    archive_path = tmp_path / "models.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("pack/det_10g.onnx", b"model")
+    spec = DownloadSpec(
+        name="detector",
+        url="https://example.invalid/model.zip",
+        destination="detector.onnx",
+        size=archive_path.stat().st_size,
+        sha256=hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+        destination_sha256="0" * 64,
+        zip_member_suffix="det_10g.onnx",
+    )
+
+    with pytest.raises(RuntimeError, match="installed model checksum mismatch"):
+        _materialize(spec, archive_path, tmp_path / spec.destination)
 
 
 def test_existing_direct_model_is_rehashed(tmp_path) -> None:

@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSlider,
+    QSpinBox,
     QSplitter,
     QTabWidget,
     QTableWidget,
@@ -28,6 +29,7 @@ from ..database import FaceDatabase
 from ..engine import FaceEngine
 from ..matcher import GalleryMatcher
 from ..pipeline import FrameResult, RecognitionEvent
+from ..privacy import redact_source_credentials
 from ..video_worker import VideoWorker
 from .person_page import PersonPage
 from .video_widget import VideoWidget
@@ -64,12 +66,20 @@ class MainWindow(QMainWindow):
         self.threshold_slider.setRange(35, 75)
         self.threshold_slider.setValue(round(engine.config.match_threshold * 100))
         self.threshold_slider.valueChanged.connect(self._threshold_changed)
+        self.processing_stride = QSpinBox()
+        self.processing_stride.setRange(1, 6)
+        self.processing_stride.setValue(1)
+        self.processing_stride.setToolTip("1 为逐帧检测；数值越大速度越快，但快速经过的人脸可能漏检。")
+        self.processing_stride.valueChanged.connect(self._processing_stride_changed)
 
         self.start_button = QPushButton("开始识别")
+        self.pause_button = QPushButton("暂停")
         self.stop_button = QPushButton("停止")
         self.start_button.setProperty("class", "primary")
         self.stop_button.setEnabled(False)
+        self.pause_button.setEnabled(False)
         self.start_button.clicked.connect(self.start_stream)
+        self.pause_button.clicked.connect(self.toggle_pause)
         self.stop_button.clicked.connect(self.stop_stream)
 
         monitor = self._build_monitor_tab()
@@ -109,8 +119,10 @@ class MainWindow(QMainWindow):
         threshold_row.addWidget(self.threshold_slider, 1)
         threshold_row.addWidget(self.threshold_label)
         form.addRow("相似度阈值：", threshold_row)
+        form.addRow("处理帧步长：", self.processing_stride)
         action_row = QHBoxLayout()
         action_row.addWidget(self.start_button)
+        action_row.addWidget(self.pause_button)
         action_row.addWidget(self.stop_button)
         form.addRow(action_row)
         settings = QGroupBox("识别控制")
@@ -192,7 +204,8 @@ class MainWindow(QMainWindow):
         elif isinstance(self.source, int):
             text = f"摄像头 {self.source}"
         elif self.source.lower().startswith(("rtsp://", "http://", "https://", "rtmp://")):
-            text = self.source[:70] + ("…" if len(self.source) > 70 else "")
+            safe_source = redact_source_credentials(self.source)
+            text = safe_source[:70] + ("…" if len(safe_source) > 70 else "")
         else:
             text = Path(self.source).name
             self.source_label.setToolTip(self.source)
@@ -217,6 +230,7 @@ class MainWindow(QMainWindow):
             self.matcher,
             self.source,
             self.threshold_slider.value() / 100.0,
+            self.processing_stride.value(),
             self,
         )
         self.worker.frame_ready.connect(self._frame_ready)
@@ -226,7 +240,17 @@ class MainWindow(QMainWindow):
         self.worker.start()
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
+        self.pause_button.setEnabled(True)
+        self.pause_button.setText("暂停")
         self.status_label.setText("GPU 识别中")
+
+    def toggle_pause(self) -> None:
+        if not self.worker or not self.worker.isRunning():
+            return
+        paused = self.pause_button.text() == "暂停"
+        self.worker.set_paused(paused)
+        self.pause_button.setText("继续" if paused else "暂停")
+        self.status_label.setText("已暂停" if paused else "GPU 识别中")
 
     def stop_stream(self) -> None:
         worker = self.worker
@@ -267,6 +291,8 @@ class MainWindow(QMainWindow):
     def _stream_ended(self) -> None:
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
+        self.pause_button.setEnabled(False)
+        self.pause_button.setText("暂停")
         self.status_label.setText("已停止")
 
     def _threshold_changed(self, value: int) -> None:
@@ -274,6 +300,10 @@ class MainWindow(QMainWindow):
         self.threshold_label.setText(f"{threshold:.2f}")
         if self.worker:
             self.worker.set_threshold(threshold)
+
+    def _processing_stride_changed(self, value: int) -> None:
+        if self.worker:
+            self.worker.set_processing_stride(value)
 
     def _update_gallery_status(self) -> None:
         self.gallery_label.setText(
@@ -284,8 +314,8 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "关于",
-            "监控视频人脸检索 0.1\n\n"
-            "SCRFD-10G + LVFace-B + 多帧质量加权聚合\n"
+            "监控视频人脸检索 0.2.2\n\n"
+            "SCRFD-10G + LVFace-B + 镜像 TTA + 鲁棒多帧聚合\n"
             "推理强制使用 CUDA，不允许 CPU fallback。\n\n"
             "注意：默认下载的预训练权重仅限非商业研究；生产部署需替换为已获授权的 ONNX 权重。",
         )

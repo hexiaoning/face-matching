@@ -34,6 +34,12 @@ def test_database_crud_and_gallery(tmp_path) -> None:
     np.testing.assert_allclose(np.linalg.norm(gallery[1].embedding), 1.0, atol=1e-6)
     assert len(list((tmp_path / "photos" / person_id).iterdir())) == 2
 
+    samples = database.list_face_samples(person_id)
+    database.delete_face_sample(samples[0].id)
+    assert database.get_person(person_id).photo_count == 1
+    with pytest.raises(ValueError, match="至少保留"):
+        database.delete_face_sample(database.list_face_samples(person_id)[0].id)
+
     with pytest.raises(sqlite3.IntegrityError):
         database.add_person("重复", "110101199001011234", [first], "model-v1")
 
@@ -58,7 +64,7 @@ def test_matcher_uses_person_level_multi_photo_score_and_margin(tmp_path) -> Non
     assert accepted.accepted
     assert accepted.person_id == alice_id
     assert accepted.name == "Alice"
-    assert accepted.masked_id_card == "A-***"
+    assert accepted.masked_id_card == "***"
 
     ambiguous = matcher.match(np.array([1.0, 1.0]), threshold=0.5, min_margin=0.2)
     assert not ambiguous.accepted

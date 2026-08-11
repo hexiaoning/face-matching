@@ -8,4 +8,6 @@ htmlcov/
 data/
 dist/
 build/
+.offline-build/
+release/
 *.egg-info/

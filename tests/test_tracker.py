@@ -4,7 +4,7 @@ import numpy as np
 
 from face_matching.detector import FaceDetection
 from face_matching.matcher import MatchResult
-from face_matching.tracker import FaceTrack, MultiFaceTracker
+from face_matching.tracker import FaceTrack, MultiFaceTracker, robust_aggregate
 
 
 LANDMARKS = np.array(
@@ -51,3 +51,17 @@ def test_track_aggregation_confirmation_and_invalidation() -> None:
     assert track.stable_match is None
     assert track.last_match is None
     assert track.matched_embedding_version == -1
+
+
+def test_robust_aggregation_rejects_identity_outlier() -> None:
+    aggregate = robust_aggregate(
+        [
+            np.array([1.0, 0.0]),
+            np.array([0.98, 0.02]),
+            np.array([-1.0, 0.0]),
+        ],
+        [0.9, 0.8, 1.0],
+    )
+    assert aggregate is not None
+    assert aggregate[0] > 0.99
+    assert aggregate[1] > 0.0

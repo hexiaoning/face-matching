@@ -32,6 +32,16 @@ class EnrollmentSample:
 
 
 @dataclass(frozen=True, slots=True)
+class FaceSample:
+    id: str
+    person_id: str
+    image_path: Path
+    quality: float
+    embedding_model: str
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class GallerySample:
     person_id: str
     name: str
@@ -122,6 +132,28 @@ class FaceDatabase:
                 (person_id,),
             ).fetchone()
         return Person(**dict(row)) if row else None
+
+    def list_face_samples(self, person_id: str) -> list[FaceSample]:
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT id, person_id, image_path, quality, embedding_model, created_at
+                FROM face_samples WHERE person_id = ?
+                ORDER BY quality DESC, created_at
+                """,
+                (person_id,),
+            ).fetchall()
+        return [
+            FaceSample(
+                id=row["id"],
+                person_id=row["person_id"],
+                image_path=Path(row["image_path"]),
+                quality=float(row["quality"]),
+                embedding_model=row["embedding_model"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
 
     def add_person(
         self,
@@ -237,6 +269,29 @@ class FaceDatabase:
             person_dir.rmdir()
         except OSError:
             pass
+
+    def delete_face_sample(self, sample_id: str) -> None:
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT s.person_id, s.image_path,
+                       (SELECT COUNT(*) FROM face_samples WHERE person_id = s.person_id) AS photo_count
+                FROM face_samples s WHERE s.id = ?
+                """,
+                (sample_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(sample_id)
+        if int(row["photo_count"]) <= 1:
+            raise ValueError("每个人必须至少保留一张照片")
+        with self._transaction() as connection:
+            cursor = connection.execute("DELETE FROM face_samples WHERE id = ?", (sample_id,))
+            if cursor.rowcount != 1:
+                raise KeyError(sample_id)
+        person_dir = (self.photos / row["person_id"]).resolve()
+        image_path = Path(row["image_path"]).resolve()
+        if image_path.is_relative_to(person_dir):
+            image_path.unlink(missing_ok=True)
 
     def gallery(self, model_id: str) -> list[GallerySample]:
         with self._lock:

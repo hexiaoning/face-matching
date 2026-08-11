@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import site
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -10,10 +12,43 @@ from .errors import GPUUnavailableError
 
 
 GPU_PROVIDERS = ("TensorrtExecutionProvider", "CUDAExecutionProvider")
+_DLL_DIRECTORY_HANDLES: list[Any] = []
+
+
+def _runtime_library_dirs() -> list[Path]:
+    roots = [Path(sys.prefix) / "Lib" / "site-packages"]
+    roots.extend(Path(value) for value in site.getsitepackages())
+    usersite = site.getusersitepackages()
+    if usersite:
+        roots.append(Path(usersite))
+    bundled = getattr(sys, "_MEIPASS", None)
+    if bundled:
+        roots.insert(0, Path(bundled))
+    roots.insert(0, Path(sys.executable).resolve().parent)
+
+    discovered: list[Path] = []
+    for root in roots:
+        nvidia = root / "nvidia"
+        if not nvidia.is_dir():
+            continue
+        for package in nvidia.iterdir():
+            for child in (package / "bin", package / "lib"):
+                if child.is_dir() and child not in discovered:
+                    discovered.append(child)
+    return discovered
 
 
 def preload_cuda_runtime() -> None:
     """Load pip-installed CUDA/cuDNN DLLs before provider discovery on Windows."""
+    for directory in _runtime_library_dirs():
+        value = str(directory)
+        if os.name == "nt" and hasattr(os, "add_dll_directory"):
+            try:
+                _DLL_DIRECTORY_HANDLES.append(os.add_dll_directory(value))
+            except OSError:
+                pass
+        if value not in os.environ.get("PATH", "").split(os.pathsep):
+            os.environ["PATH"] = value + os.pathsep + os.environ.get("PATH", "")
     preload = getattr(ort, "preload_dlls", None)
     if preload is None:
         return

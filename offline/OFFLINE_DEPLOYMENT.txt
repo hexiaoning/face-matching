@@ -1,0 +1,27 @@
+Face Matching 0.2.2 - Windows offline package
+================================================
+
+Target computer requirements:
+1. Windows 11 64-bit and an NVIDIA GPU (RTX 4070 SUPER is the reference target).
+2. A compatible NVIDIA display driver. Verify that nvidia-smi works.
+3. No internet, Python, CUDA Toolkit, cuDNN, or administrator installation is required.
+
+Deployment:
+1. Verify the ZIP against its adjacent .sha256 file before copying it to the target.
+2. Extract the entire ZIP to a local NTFS directory. Do not run inside the ZIP.
+3. Double-click "GPU Diagnostics.bat" once. gpu_ready and inference_ready must be true.
+4. Double-click "Start Face Matching.bat".
+
+The package contains the application, Python runtime, Qt/OpenCV, ONNX Runtime GPU,
+CUDA/cuDNN user-mode runtime DLLs, and both ONNX models. nvcuda.dll is supplied only
+by the NVIDIA display driver and intentionally cannot be redistributed here.
+
+People, copied photos, and the SQLite database are stored under:
+  %LOCALAPPDATA%\FaceMatching
+
+Privacy and licensing:
+- ID numbers are masked in recognition results. The people-management screen is an
+  administrative view and displays the full value.
+- Database and photos are not encrypted. Protect the Windows account and disk.
+- The bundled default pretrained weights are for non-commercial research only.
+  Commercial deployment requires appropriately licensed replacement ONNX models.

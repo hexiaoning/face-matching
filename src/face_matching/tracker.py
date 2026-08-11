@@ -21,6 +21,31 @@ def bbox_iou(first: np.ndarray, second: np.ndarray) -> float:
     return float(intersection / max(area_a + area_b - intersection, 1e-8))
 
 
+def robust_aggregate(
+    embeddings: list[np.ndarray] | deque[np.ndarray],
+    qualities: list[float] | deque[float],
+) -> np.ndarray | None:
+    """Quality-weighted track template with medoid outlier rejection."""
+    if not embeddings:
+        return None
+    matrix = l2_normalize(np.stack(embeddings))
+    quality = np.maximum(np.asarray(qualities, dtype=np.float32), 0.05)
+    recency = np.linspace(0.75, 1.0, len(quality), dtype=np.float32)
+
+    if len(matrix) >= 3:
+        cosine = matrix @ matrix.T
+        medoid = int(np.argmax(cosine.mean(axis=1)))
+        consistent = cosine[medoid] >= 0.20
+        if np.count_nonzero(consistent) >= 2:
+            matrix = matrix[consistent]
+            quality = quality[consistent]
+            recency = recency[consistent]
+
+    weights = quality**1.5 * recency
+    aggregate = np.average(matrix, axis=0, weights=weights)
+    return l2_normalize(aggregate.reshape(1, -1))[0]
+
+
 @dataclass(slots=True)
 class FaceTrack:
     id: int
@@ -67,14 +92,7 @@ class FaceTrack:
         self.embedding_version += 1
 
     def aggregate_embedding(self) -> np.ndarray | None:
-        if not self.embeddings:
-            return None
-        matrix = np.stack(self.embeddings)
-        qualities = np.asarray(self.qualities, dtype=np.float32)
-        recency = np.linspace(0.75, 1.0, len(qualities), dtype=np.float32)
-        weights = np.maximum(qualities, 0.05) ** 1.5 * recency
-        aggregate = np.sum(matrix * weights[:, None], axis=0) / np.sum(weights)
-        return l2_normalize(aggregate.reshape(1, -1))[0]
+        return robust_aggregate(self.embeddings, self.qualities)
 
     def update_identity(self, match: MatchResult, confirmations: int) -> bool:
         """Consume one fresh embedding decision and report a newly stable identity."""

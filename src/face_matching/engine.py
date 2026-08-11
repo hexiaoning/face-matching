@@ -50,9 +50,18 @@ class FaceEngine:
             accepted.append(detection)
         return accepted
 
-    def embed(self, aligned_faces: list[np.ndarray]) -> np.ndarray:
+    def embed(
+        self,
+        aligned_faces: list[np.ndarray],
+        mirror_augmentation: bool | None = None,
+    ) -> np.ndarray:
+        use_mirror = (
+            self.config.mirror_augmentation
+            if mirror_augmentation is None
+            else mirror_augmentation
+        )
         with self._inference_lock:
-            return self.recognizer.embed_batch(aligned_faces)
+            return self.recognizer.embed_batch(aligned_faces, use_mirror)
 
     def _warm_up_gpu(self) -> None:
         """Run both networks once so CUDA failures happen before the GUI opens."""
@@ -61,7 +70,8 @@ class FaceEngine:
             with self._inference_lock:
                 self.detector.detect(np.zeros((height, width, 3), dtype=np.uint8))
                 self.recognizer.embed_batch(
-                    [np.zeros((112, 112, 3), dtype=np.uint8)]
+                    [np.zeros((112, 112, 3), dtype=np.uint8)],
+                    mirror_augmentation=False,
                 )
         except Exception as exc:
             raise GPUUnavailableError(

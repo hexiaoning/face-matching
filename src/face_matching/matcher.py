@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .database import FaceDatabase, GallerySample
+from .privacy import mask_id_card
 from .recognizer import l2_normalize
 
 
@@ -20,11 +21,7 @@ class MatchResult:
 
     @property
     def masked_id_card(self) -> str:
-        if not self.id_card:
-            return ""
-        if len(self.id_card) <= 7:
-            return self.id_card[:2] + "***"
-        return f"{self.id_card[:3]}********{self.id_card[-4:]}"
+        return mask_id_card(self.id_card)
 
 
 class GalleryMatcher:

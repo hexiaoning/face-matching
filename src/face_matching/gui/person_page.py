@@ -22,6 +22,7 @@ from ..enrollment import prepare_enrollment_samples
 from ..errors import EnrollmentError
 from ..matcher import GalleryMatcher
 from .enrollment_dialog import EnrollmentDialog
+from .photo_manager_dialog import PhotoManagerDialog
 
 
 class PersonPage(QWidget):
@@ -53,16 +54,19 @@ class PersonPage(QWidget):
 
         add_button = QPushButton("＋ 录入人员")
         edit_button = QPushButton("修改 / 补照片")
+        photos_button = QPushButton("照片管理")
         delete_button = QPushButton("删除人员")
         refresh_button = QPushButton("刷新")
         add_button.setProperty("class", "primary")
         add_button.clicked.connect(self.add_person)
         edit_button.clicked.connect(self.edit_person)
+        photos_button.clicked.connect(self.manage_photos)
         delete_button.clicked.connect(self.delete_person)
         refresh_button.clicked.connect(self.refresh)
         controls = QHBoxLayout()
         controls.addWidget(add_button)
         controls.addWidget(edit_button)
+        controls.addWidget(photos_button)
         controls.addWidget(delete_button)
         controls.addStretch()
         controls.addWidget(refresh_button)
@@ -158,6 +162,17 @@ class PersonPage(QWidget):
             return
         self.refresh()
         self.persons_changed.emit()
+
+    def manage_photos(self) -> None:
+        person = self.selected_person()
+        if person is None:
+            QMessageBox.information(self, "请选择人员", "请先在表格中选择一名人员。")
+            return
+        dialog = PhotoManagerDialog(self.database, person, self)
+        dialog.exec()
+        if dialog.changed:
+            self.refresh()
+            self.persons_changed.emit()
 
     def _prepare(self, paths):
         if not paths:
