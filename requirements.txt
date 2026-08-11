@@ -1,0 +1,7 @@
+# CUDA 12.8 and cuDNN 9 runtime DLLs are installed by the package extras.
+# A compatible NVIDIA display driver is still required.
+numpy>=2.0,<3
+opencv-python>=4.10,<5
+onnxruntime-gpu[cuda,cudnn]==1.26.0
+PySide6>=6.8,<7
+
