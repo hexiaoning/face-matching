@@ -8,9 +8,9 @@ import numpy as np
 from .config import AppConfig
 from .database import FaceDatabase
 from .errors import EnrollmentError
-from .gpu import create_gpu_session
+from .gpu import create_gpu_session, resolve_gpu_backend
 from .matching import GalleryMatcher
-from .models import profile_spec, required_paths
+from .models import feature_model_id, profile_spec, required_paths
 from .vision.alignment import align_face
 from .vision.detector import Detection, SCRFDDetector
 from .vision.quality import Quality, assess_quality
@@ -56,9 +56,16 @@ class FaceEngine:
         self.config = config.validate()
         self.database = database
         self.profile = profile_spec(config.model_profile)
+        self.mirror_augmentation = bool(config.mirror_augmentation)
+        self.model_id = feature_model_id(config.model_profile, self.mirror_augmentation)
+        self.gpu_backend = resolve_gpu_backend(config.gpu_backend, config.gpu_device_id)
         detector_path, recognizer_path = required_paths(config.model_profile, model_root)
-        detector_session = create_gpu_session(detector_path, config.gpu_device_id)
-        recognizer_session = create_gpu_session(recognizer_path, config.gpu_device_id)
+        detector_session = create_gpu_session(
+            detector_path, config.gpu_device_id, backend=self.gpu_backend
+        )
+        recognizer_session = create_gpu_session(
+            recognizer_path, config.gpu_device_id, backend=self.gpu_backend
+        )
         self.detector = SCRFDDetector(
             detector_session,
             input_size=config.detector_size,
@@ -68,7 +75,7 @@ class FaceEngine:
         self.embedder = FaceEmbedder(recognizer_session)
         self.matcher = GalleryMatcher(
             database,
-            self.profile.model_id,
+            self.model_id,
             threshold=config.match_threshold,
             min_margin=config.match_margin,
         )
@@ -104,12 +111,12 @@ class FaceEngine:
             )
         aligned = align_face(image, detection.landmarks)
         quality = assess_quality(aligned, detection)
-        if quality.total < max(0.12, self.config.min_quality * 0.65):
+        if quality.total < self.config.enrollment_min_quality:
             raise EnrollmentError(
                 f"照片质量过低（{quality.total:.2f}），请换用更清晰或更正面的照片"
             )
         return EnrollmentFeature(
-            self.embedder.embed(aligned, mirror_augmentation=self.config.mirror_augmentation),
+            self.embedder.embed(aligned, mirror_augmentation=self.mirror_augmentation),
             quality,
             detection,
         )
@@ -141,7 +148,7 @@ class FaceEngine:
             )
         embeddings = self.embedder.embed_many(
             aligned_faces,
-            mirror_augmentation=self.config.mirror_augmentation,
+            mirror_augmentation=self.mirror_augmentation,
         )
         for observation_index, embedding in zip(usable_observation_indexes, embeddings, strict=True):
             observations[observation_index].embedding = embedding

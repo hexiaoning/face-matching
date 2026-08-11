@@ -42,11 +42,13 @@ def assess_quality(aligned_face: np.ndarray, detection: Detection) -> Quality:
     mean = float(gray.mean())
     illumination = _clamp(1.0 - abs(mean - 127.5) / 127.5)
     detection_score = _clamp((detection.score - 0.45) / 0.55)
-    total = _clamp(
-        0.28 * blur
-        + 0.27 * pose
-        + 0.20 * size_score
-        + 0.15 * detection_score
-        + 0.10 * illumination
+    # A weighted geometric mean prevents a very bad blur/pose dimension from
+    # being hidden by a large face and a confident detector. The small floor
+    # still lets a difficult side-view contribute weakly to track aggregation.
+    dimensions = np.maximum(
+        np.asarray((blur, pose, size_score, detection_score, illumination), dtype=np.float32),
+        0.05,
     )
+    weights = np.asarray((0.28, 0.27, 0.20, 0.15, 0.10), dtype=np.float32)
+    total = _clamp(float(np.prod(dimensions**weights)))
     return Quality(total, blur, pose, size_score, illumination, detection_score)

@@ -14,7 +14,7 @@ $BuildEnvironment = Join-Path $ProjectRoot ".build-venv"
 $BuildPython = Join-Path $BuildEnvironment "Scripts\python.exe"
 $ModelRoot = Join-Path $ProjectRoot ".build-assets\models"
 $ReleaseRoot = Join-Path $ProjectRoot "dist"
-$ReleaseName = "FaceMatching-v2.3.0-windows-x64"
+$ReleaseName = "FaceMatching-v2.4.0-windows-x64"
 $ReleaseDirectory = Join-Path $ReleaseRoot $ReleaseName
 $Archive = Join-Path $ReleaseRoot ($ReleaseName + ".zip")
 
@@ -77,7 +77,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "The existing build environment is not 64-bit Python 3.12. Run again with -Clean."
 }
 
-Write-Host "[1/5] Installing bounded build and GPU runtime dependencies..." -ForegroundColor Cyan
+Write-Host "[1/5] Installing bounded CUDA/OpenVINO GPU runtime dependencies..." -ForegroundColor Cyan
 Invoke-CheckedPython -Arguments @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
 Invoke-CheckedPython -Arguments @("-m", "pip", "uninstall", "-y", "onnxruntime", "onnxruntime-directml")
 Invoke-CheckedPython -Arguments @("-m", "pip", "install", "--upgrade", ($ProjectRoot + "[build]"))
@@ -114,4 +114,4 @@ if (-not (Test-Path -LiteralPath (Join-Path $ReleaseDirectory "FaceMatching.exe"
 Write-Host "[5/5] Creating a Zip64 archive and SHA-256 manifests..." -ForegroundColor Cyan
 Invoke-CheckedPython -Arguments @((Join-Path $ProjectRoot "scripts\create_release_archive.py"), $ReleaseDirectory, $Archive)
 Write-Host "Offline package ready: $Archive" -ForegroundColor Green
-Write-Host "The target machine needs only Windows 11 x64, a compatible NVIDIA GPU, and its display driver." -ForegroundColor Green
+Write-Host "The target machine needs Windows 11 x64 and either a compatible NVIDIA or Intel GPU display driver." -ForegroundColor Green

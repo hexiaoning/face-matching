@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+import numpy as np
 
 from face_matching import gpu
 from face_matching.errors import GPUUnavailableError
@@ -52,6 +53,7 @@ def test_gpu_package_is_a_hard_requirement(monkeypatch):
 def test_session_disables_cpu_execution_fallback(monkeypatch, tmp_path):
     runtime = FakeOrt()
     monkeypatch.setattr(gpu, "_load_ort", lambda: runtime)
+    monkeypatch.setattr(gpu, "assert_cuda_available", lambda: "CUDA test")
     session = gpu.create_gpu_session(tmp_path / "model.onnx", device_id=2)
 
     assert session.get_providers()[0] == "CUDAExecutionProvider"
@@ -68,6 +70,68 @@ def test_session_disables_cpu_execution_fallback(monkeypatch, tmp_path):
             },
         )
     ]
+
+
+def test_auto_backend_prefers_cuda_then_falls_back_to_openvino(monkeypatch):
+    monkeypatch.setattr(gpu, "assert_cuda_available", lambda: "CUDA test")
+    monkeypatch.setattr(gpu, "assert_openvino_available", lambda device_id=0: "OpenVINO test")
+    assert gpu.resolve_gpu_backend("auto") == "cuda"
+
+    def unavailable():
+        raise GPUUnavailableError("no CUDA")
+
+    monkeypatch.setattr(gpu, "assert_cuda_available", unavailable)
+    assert gpu.resolve_gpu_backend("auto") == "openvino"
+
+
+def test_openvino_adapter_targets_gpu_fp32_and_supports_all_outputs(monkeypatch, tmp_path):
+    class Port:
+        def __init__(self, name, shape):
+            self.name = name
+            self.partial_shape = shape
+
+        def get_any_name(self):
+            return self.name
+
+    class Request:
+        def __init__(self):
+            self.input = None
+
+        def set_input_tensor(self, index, tensor):
+            self.input = tensor
+
+        def infer(self):
+            pass
+
+        def get_output_tensor(self, index):
+            return SimpleNamespace(data=np.asarray([[index + 1.0]], dtype=np.float32))
+
+    class Compiled:
+        inputs = [Port("input", [1, 3, 2, 2])]
+        outputs = [Port("first", [1, 1]), Port("second", [1, 1])]
+
+        def create_infer_request(self):
+            return Request()
+
+    class Core:
+        available_devices = ["CPU", "GPU.0"]
+
+        def read_model(self, path):
+            return path
+
+        def compile_model(self, model, device, options):
+            assert device == "GPU.0"
+            assert options["INFERENCE_PRECISION_HINT"] == "f32"
+            return Compiled()
+
+    runtime = SimpleNamespace(Core=Core, Tensor=lambda array: array, __version__="test")
+    monkeypatch.setattr(gpu, "_load_openvino", lambda: runtime)
+    session = gpu.OpenVINOInferenceSession(tmp_path / "model.onnx")
+
+    outputs = session.run(None, {"input": np.zeros((1, 3, 2, 2), dtype=np.float32)})
+
+    assert session.get_providers() == ["OpenVINO-GPU:GPU.0"]
+    assert [float(item[0, 0]) for item in outputs] == [1.0, 2.0]
 
 
 def test_model_file_size_and_sha256_are_verified(tmp_path):

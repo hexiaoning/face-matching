@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "face-matching"
-version = "2.3.0"
-description = "GPU-only desktop video face matching for Windows"
+version = "2.4.0"
+description = "CUDA/OpenVINO GPU-only desktop video face matching for Windows"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 dependencies = [
@@ -13,6 +13,7 @@ dependencies = [
   "opencv-python-headless>=4.10,<5",
   "PySide6>=6.8,<7",
   "onnxruntime-gpu[cuda,cudnn]>=1.24,<1.27",
+  "openvino>=2025.3,<2027",
 ]
 
 [project.optional-dependencies]

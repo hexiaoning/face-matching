@@ -88,6 +88,17 @@ def profile_spec(profile: str) -> ModelProfile:
         raise ValueError(f"未知模型配置: {profile}") from exc
 
 
+def feature_model_id(profile: str, mirror_augmentation: bool) -> str:
+    """Return the complete embedding-space identifier.
+
+    Horizontal-flip TTA changes every stored and probe embedding, so it must
+    be part of the gallery key instead of being treated as a presentation or
+    runtime-only option.
+    """
+    augmentation = "tta" if mirror_augmentation else "single"
+    return f"{profile_spec(profile).model_id}-{augmentation}"
+
+
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:

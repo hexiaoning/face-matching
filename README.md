@@ -1,8 +1,8 @@
 # Face Matching
 
-Windows 11 桌面端监控视频人脸识别。人员库保存“姓名 + 身份证号 + 1～多张照片”，界面支持本地视频、摄像头、RTSP/RTMP 视频流，识别结果会在视频上标注并记录。`v2.3` 提供包含运行库和模型的完全离线便携包构建流程。
+Windows 11 桌面端监控视频人脸识别。人员库保存“姓名 + 身份证号 + 1～多张照片”，界面支持本地视频、摄像头、RTSP/RTMP 视频流，识别结果会在视频上标注。`v2.4` 为每个命中人员保留整段视频的最高 score，并在匹配列表中按 score 倒序输出。
 
-> 这是 **GPU-only** 应用。检测和人脸特征网络只创建 `CUDAExecutionProvider`，并禁用 ONNX Runtime CPU fallback。CUDA/NVIDIA 驱动或 GPU 模型加载不可用时，程序会明确报错并退出。视频解码、跟踪管理、SQLite 和 GUI 等非神经网络工作仍由 CPU 执行。
+> 这是 **GPU-only** 应用。NVIDIA 使用 ONNX Runtime CUDA，Intel 核显/Arc 使用 OpenVINO GPU FP32；两种后端都禁止神经网络回退 CPU。`auto` 优先 CUDA，再选 OpenVINO。视频解码、跟踪管理、SQLite 和 GUI 等非神经网络工作仍由 CPU 执行。
 
 > 这是部署在受控环境中的**内部系统，不需要脱敏功能**。程序不遮罩身份证号，也不清理视频源地址中的用户名或密码；人员表、识别结果和事件日志均保留并显示完整原始值。部署方应通过内部账号权限、主机访问控制和磁盘加密保护这些数据。
 
@@ -10,9 +10,9 @@ Windows 11 桌面端监控视频人脸识别。人员库保存“姓名 + 身份
 
 ```text
 视频/摄像头
-   → SCRFD-10G 人脸检测 + 5 点对齐 (CUDA)
+   → SCRFD-10G 人脸检测 + 5 点对齐 (CUDA / OpenVINO GPU)
    → 模糊/姿态/尺寸/照明质量门控
-   → LVFace-B 特征 + 水平镜像测试增强 (CUDA)
+   → LVFace-B 特征 + 水平镜像测试增强 (CUDA / OpenVINO GPU)
    → 位置 + 运动预测 + 外观特征的人脸轨迹关联
    → 同一轨迹 Top-K 高质量帧加权聚合 + 离群身份帧剔除
    → 每人多照片模板（最佳样本 + Top-3 质量加权 + 人员中心）
@@ -24,9 +24,9 @@ Windows 11 桌面端监控视频人脸识别。人员库保存“姓名 + 身份
 ## 支持环境
 
 - Windows 11 64 位
-- NVIDIA RTX GPU（目标机型：RTX 4070 SUPER 12 GB）
-- 较新的 NVIDIA 显卡驱动
-- 不需要预先安装 CUDA Toolkit/cuDNN；安装脚本通过官方 `onnxruntime-gpu[cuda,cudnn]` wheel 安装 CUDA 12/cuDNN 运行 DLL
+- NVIDIA RTX GPU（目标机型：RTX 4070 SUPER 12 GB）或 Intel UHD/Iris/Arc GPU
+- 对应的较新 NVIDIA/Intel 显卡驱动
+- 不需要预先安装 CUDA Toolkit、cuDNN 或 OpenVINO Toolkit
 
 ## 正式交付：目标机完全离线
 
@@ -36,13 +36,13 @@ Windows 11 桌面端监控视频人脸识别。人员库保存“姓名 + 身份
 .\scripts\build_offline_bundle.ps1 -Clean -AcceptResearchWeights
 ```
 
-构建脚本会先跑测试，下载并校验固定 SHA-256 的模型，然后把 Python、PySide6、OpenCV、ONNX Runtime GPU、CUDA/cuDNN/cuBLAS DLL 和两套模型一并打入 `dist\FaceMatching-v2.3.0-windows-x64.zip`。目标机不需要 Python、CUDA Toolkit 或互联网；只需预装兼容的 NVIDIA 显卡驱动，解压后先运行 `verify_offline.ps1`，再双击 `FaceMatching.exe`。详细步骤见 [离线部署文档](docs/offline-deployment.md)。
+构建脚本会先跑测试，下载并校验固定 SHA-256 的模型，然后把 Python、PySide6、OpenCV、CUDA/OpenVINO GPU 运行库和两套模型一并打入 `dist\FaceMatching-v2.4.0-windows-x64.zip`。目标机不需要 Python、CUDA Toolkit、OpenVINO Toolkit 或互联网；只需预装对应显卡驱动。
 
 > NVIDIA 显卡驱动是与机器/系统绑定的设备组件，不随应用包分发；其余应用运行依赖和模型均包含在离线包中。包含 LVFace-B 权重前必须接受其非商业研究限制；商业部署可只构建 `auraface`。
 
 ## 开发机联网安装与运行
 
-1. 安装/更新 [NVIDIA 显卡驱动](https://www.nvidia.com/Download/index.aspx)。
+1. 安装/更新 NVIDIA 或 Intel 显卡驱动。
 2. 双击 `install.cmd`。脚本会创建隔离的 `.venv`、安装 GUI 与 CUDA/cuDNN 运行库，然后执行 GPU 硬校验。如果没有合适的 Python，Windows 11 上会先通过 `winget` 安装用户级 Python 3.12。该路径用于开发/评估，需要联网，不是目标机部署方式。
 3. 双击 `run.cmd`。
 4. 开发模式首次运行会询问是否下载并校验模型；离线便携版绝不会联网补模型。
@@ -60,7 +60,7 @@ GPU 自检（不会回退 CPU）：
 .\.venv\Scripts\python.exe -m face_matching --check-gpu
 ```
 
-模型哈希 + 两个模型真实 CUDA 推理诊断：
+模型哈希 + 两个模型真实 GPU 推理诊断：
 
 ```powershell
 .\.venv\Scripts\python.exe -m face_matching --diagnose --profile lvface-b --report diagnostics.json
@@ -70,8 +70,10 @@ GPU 自检（不会回退 CPU）：
 
 1. 打开“人员库”，点“录入人员”，填姓名和身份证号，选择 1～多张照片。建议同时提供清晰正面、左右轻度侧脸照片。
 2. 在“视频识别”中选视频，或输入 `0` 打开本机摄像头，或输入 RTSP/RTMP 地址。
-3. 点“开始识别”。绿色为已确认人员，黄色为采集中/陌生人。内部系统会在表格中显示完整身份证号。
-4. 在“设置”中调相似度、质量、检测尺寸等参数。离线 GUI 只显示包内已有模型；改识别模型后需重启，并在人员库中点“重建当前模型特征”。
+3. 点“开始识别”。绿色为已确认人员，黄色为采集中/陌生人。匹配表每人保留最高 score，按 score 倒序显示。
+4. 在“设置”中调 GPU 后端、相似度、质量、检测尺寸等参数。更改识别模型或镜像 TTA 后需重启，并在人员库中点“重建当前模型特征”。
+
+镜像 TTA 状态会写入特征 `model_id`（`-tta` / `-single`）。两种特征空间不会混用；从 v2.3 升级后必须重建一次人员库特征。
 
 ## 模型档位与许可证
 
@@ -101,4 +103,4 @@ python -m pytest
 python -m compileall -q src
 ```
 
-纯逻辑测试可在无 GPU 的开发机上执行；真实模型启动必须通过 CUDA 硬校验。
+纯逻辑测试可在无 GPU 的开发机上执行；真实模型启动必须通过 CUDA 或 OpenVINO GPU 硬校验。

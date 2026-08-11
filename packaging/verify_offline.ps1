@@ -30,7 +30,7 @@ if ($Profiles.Count -eq 0) {
 foreach ($Profile in $Profiles) {
     $Report = Join-Path ([IO.Path]::GetTempPath()) ("face-matching-{0}-{1}.json" -f $Profile, [guid]::NewGuid().ToString("N"))
     try {
-        Write-Host "Verifying model hashes and real CUDA inference: $Profile" -ForegroundColor Cyan
+        Write-Host "Verifying model hashes and real CUDA/OpenVINO GPU inference: $Profile" -ForegroundColor Cyan
         $Arguments = @("--diagnose", "--profile", $Profile, "--report", ('"{0}"' -f $Report))
         $Process = Start-Process -FilePath $Executable -ArgumentList $Arguments -Wait -PassThru -WindowStyle Hidden
         if ($Process.ExitCode -ne 0) {
@@ -46,4 +46,4 @@ foreach ($Profile in $Profiles) {
     }
 }
 
-Write-Host "Offline bundle is complete and CUDA inference is ready." -ForegroundColor Green
+Write-Host "Offline bundle is complete and GPU inference is ready." -ForegroundColor Green

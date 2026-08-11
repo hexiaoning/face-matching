@@ -8,8 +8,8 @@ from typing import Any
 import numpy as np
 
 from . import __version__
-from .gpu import assert_cuda_available, create_gpu_session
-from .models import profile_spec, required_paths
+from .gpu import assert_gpu_available, create_gpu_session, resolve_gpu_backend
+from .models import feature_model_id, profile_spec, required_paths
 
 
 def _real_inference(session: Any, default_size: int) -> dict[str, Any]:
@@ -37,20 +37,28 @@ def _real_inference(session: Any, default_size: int) -> dict[str, Any]:
     }
 
 
-def run_diagnostics(profile: str, model_root: Path | None = None) -> dict[str, Any]:
-    """Hash-check both models and execute one real CUDA inference per model."""
-    gpu = assert_cuda_available()
+def run_diagnostics(
+    profile: str,
+    model_root: Path | None = None,
+    backend: str = "auto",
+    device_id: int = 0,
+    mirror_augmentation: bool = True,
+) -> dict[str, Any]:
+    """Hash-check both models and execute one real GPU inference per model."""
+    selected_backend = resolve_gpu_backend(backend, device_id)
+    gpu = assert_gpu_available(selected_backend, device_id)
     spec = profile_spec(profile)
     detector_path, recognizer_path = required_paths(profile, model_root, verify_hash=True)
-    detector = create_gpu_session(detector_path)
-    recognizer = create_gpu_session(recognizer_path)
+    detector = create_gpu_session(detector_path, device_id, selected_backend)
+    recognizer = create_gpu_session(recognizer_path, device_id, selected_backend)
     return {
         "ok": True,
         "application_version": __version__,
         "platform": platform.platform(),
         "gpu_runtime": gpu,
         "profile": spec.key,
-        "model_id": spec.model_id,
+        "backend": selected_backend,
+        "model_id": feature_model_id(profile, mirror_augmentation),
         "models": {
             "detector": str(detector_path),
             "recognizer": str(recognizer_path),

@@ -2,11 +2,11 @@
 
 ## 为什么是这套方案
 
-“监控人脸识别 SOTA”不是单一模型名称，而是检测、对齐、低质量特征、视频聚合和开集校准的系统问题。此实现优先选择有官方代码/权重、可在 Windows + ONNX Runtime CUDA 上稳定交付的组件。
+“监控人脸识别 SOTA”不是单一模型名称，而是检测、对齐、低质量特征、视频聚合和开集校准的系统问题。此实现可在 Windows + NVIDIA CUDA 或 Intel OpenVINO GPU 上交付。
 
 ### 检测：SCRFD-10G
 
-SCRFD 是 ICLR 2022 的高效人脸检测方案，对小人脸的精度/算力平衡好，同时输出 5 个对齐关键点。此项目使用 10G 版本，默认 640×640，远距离人脸可在 GUI 改为 960 或 1280，代价是延迟和显存增加。
+SCRFD 是 ICLR 2022 的高效人脸检测方案，对小人脸的精度/算力平衡好，同时输出 5 个对齐关键点。此项目使用 10G 版本，困难监控默认 960×960；显卡压力过大可改为 640，远距离人脸可改为 1280。
 
 ### 识别：LVFace-B 与 AuraFace
 
@@ -20,7 +20,7 @@ SCRFD 是 ICLR 2022 的高效人脸检测方案，对小人脸的精度/算力�
 
 监控视频中并非每一帧都同样可用。本实现会：
 
-1. 根据拉普拉斯清晰度、5 点几何姿态、人脸尺寸、检测置信度和照明评分。
+1. 根据拉普拉斯清晰度、5 点几何姿态、人脸尺寸、检测置信度和照明评分，用加权几何平均防止严重模糊/侧脸被其他高分掩盖。
 2. 对达到最低质量的帧做原图 + 水平翻转特征平均。
 3. 按位置重叠、速度预测与外观特征关联轨迹，只聚合该轨迹最好的 Top-K 帧，质量权重平方以降低模糊/大侧脸帧的影响。
 4. 用轨迹内特征 medoid 做一致性筛选，剔除拥挤交叉时可能串入的身份离群帧。
@@ -28,18 +28,19 @@ SCRFD 是 ICLR 2022 的高效人脸检测方案，对小人脸的精度/算力�
 
 这是面向交付的质量加权聚合，不声称完整复刻 CAFace 等需要专用训练的集合模型。
 
+6. 镜像 TTA 改变特征空间，因此 `model_id` 显式包含 `-tta` 或 `-single`，切换后要求重建底库特征。
+
 ## 硬性 GPU 约束
 
-- 依赖只安装 `onnxruntime-gpu`，安装脚本主动卸载同名 CPU/DirectML 包。
-- 启动时验证 `onnxruntime-gpu` distribution、`CUDAExecutionProvider` 和 Windows `nvcuda.dll`。
-- 会话只请求 `CUDAExecutionProvider`，并设置 `session.disable_cpu_ep_fallback=1`。
-- 检测器或识别器无法完整放到 CUDA 时直接报错。
+- NVIDIA 路径验证 `onnxruntime-gpu`、`CUDAExecutionProvider` 和 `nvcuda.dll`，并设置 `session.disable_cpu_ep_fallback=1`。
+- Intel 路径用 OpenVINO 直接把 ONNX 编译到 `GPU`/`GPU.n`，强制 FP32，不配置 CPU 候选设备。
+- `auto` 优先 CUDA，不可用时再选 OpenVINO GPU；两者都不可用就终止启动。
 
 OpenCV 解码和 NumPy 小规模余弦匹配在 CPU 上运行；它们不是占主要计算量的模型推理，也不是神经网络 CPU fallback。
 
 ## 离线运行边界
 
-正式包使用 PyInstaller `onedir`，在联网构建机上收集 Python、Qt、OpenCV、ONNX Runtime GPU 和 NVIDIA CUDA/cuDNN/cuBLAS wheel 中的 DLL，并把固定哈希模型放进只读资源目录。冻结应用优先查找用户模型，再查找包内模型；缺少模型时直接报错，绝不在目标机联网补齐。包内诊断会对模型重新做 SHA-256 校验，并让检测器和识别器各执行一次真实 CUDA 推理。
+正式包使用 PyInstaller `onedir`，收集 Python、Qt、OpenCV、ONNX Runtime CUDA、OpenVINO 和 NVIDIA 运行 DLL，并把固定哈希模型放进只读资源目录。包内诊断会校验模型并在当前选中的 GPU 后端执行真实推理。
 
 NVIDIA 显卡驱动必须由目标设备镜像预装。驱动不能由面向多种机器的普通应用包安全替代；这与不需要 CUDA Toolkit/cuDNN 预装并不冲突。
 

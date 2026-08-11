@@ -4,7 +4,8 @@
 
 | 组件 | 用途 | 上游 / 许可提示 |
 | --- | --- | --- |
-| ONNX Runtime GPU | CUDA 推理 | Microsoft MIT |
+| ONNX Runtime GPU | NVIDIA CUDA 推理 | Microsoft MIT |
+| OpenVINO | Intel GPU 推理 | Apache-2.0 |
 | PySide6 / Qt | 桌面 GUI | LGPLv3/GPLv3/商业许可；交付前按所选 Qt 许可履行义务 |
 | OpenCV | 视频与图像处理 | Apache-2.0 |
 | NumPy | 数值计算 | BSD-3-Clause |

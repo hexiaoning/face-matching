@@ -5,6 +5,7 @@ import pytest
 
 from face_matching.database import FaceDatabase, FaceSampleInput
 from face_matching.matching import GalleryMatcher
+from face_matching.models import feature_model_id
 
 
 def unit(*values: float) -> np.ndarray:
@@ -68,6 +69,18 @@ def test_matcher_uses_multi_photo_templates_and_open_set_margin(tmp_path):
     assert ambiguous.accepted is False
     assert ambiguous.person_id is None
     assert ambiguous.name == "陌生人"
+
+
+def test_gallery_never_mixes_tta_and_single_embeddings(tmp_path):
+    database = FaceDatabase(tmp_path / "faces.db")
+    tta_model = feature_model_id("lvface-b", True)
+    single_model = feature_model_id("lvface-b", False)
+    database.add_person(
+        "Alice", "A", [sample("a", unit(1, 0), model=tta_model)]
+    )
+
+    assert GalleryMatcher(database, tta_model).person_count == 1
+    assert GalleryMatcher(database, single_model).person_count == 0
 
 
 def test_corrupt_embedding_row_is_not_loaded(tmp_path):

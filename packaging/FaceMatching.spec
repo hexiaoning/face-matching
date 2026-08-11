@@ -30,11 +30,12 @@ def module_available(name):
     except (ImportError, ModuleNotFoundError):
         return False
 
-# PyInstaller's standard hooks cover Qt/OpenCV. ONNX Runtime and the CUDA wheel
-# namespace need explicit collection so no target-machine package installation
-# or CUDA Toolkit is required.
+# PyInstaller's standard hooks cover Qt/OpenCV. ONNX Runtime, OpenVINO, and the
+# CUDA wheel namespace need explicit collection so no target-machine package
+# installation or CUDA/OpenVINO Toolkit is required.
 for module_name in (
     "onnxruntime",
+    "openvino",
     "nvidia.cuda_runtime",
     "nvidia.cublas",
     "nvidia.cudnn",
@@ -53,6 +54,7 @@ for distribution in (
     "PySide6",
     "shiboken6",
     "onnxruntime-gpu",
+    "openvino",
     "nvidia-cuda-runtime-cu12",
     "nvidia-cublas-cu12",
     "nvidia-cudnn-cu12",
@@ -101,5 +103,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="FaceMatching-v2.3.0-windows-x64",
+    name="FaceMatching-v2.4.0-windows-x64",
 )

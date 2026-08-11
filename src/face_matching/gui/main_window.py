@@ -39,9 +39,10 @@ from ..database import FaceDatabase, PersonRecord
 from ..engine import FaceEngine, FrameResult
 from ..enrollment import EnrollmentService
 from ..errors import FaceMatchingError, ModelMissingError
-from ..gpu import assert_cuda_available
+from ..gpu import assert_gpu_available
 from ..models import PROFILES, available_profiles, download_profile, profile_spec, required_paths
 from ..paths import is_frozen_app
+from ..results import VideoMatchList
 from ..vision.io import read_image
 
 
@@ -176,7 +177,7 @@ class VideoWorker(QThread):
         self.engine.reset_video()
         frame_index = 0
         last_result: FrameResult | None = None
-        reported: set[tuple[int, str]] = set()
+        reported_scores: dict[tuple[int, str], float] = {}
         started = time.perf_counter()
         file_source = isinstance(capture_source, str) and not capture_source.lower().startswith(("rtsp://", "rtmp://"))
         source_fps = capture.get(cv2.CAP_PROP_FPS) if file_source else 0.0
@@ -191,8 +192,12 @@ class VideoWorker(QThread):
                     last_result = self.engine.process_frame(frame, frame_index)
                     for track in last_result.tracks:
                         key = (track.id, track.person_id or "")
-                        if track.person_id and key not in reported:
-                            reported.add(key)
+                        previous_score = reported_scores.get(key)
+                        if (
+                            track.person_id
+                            and (previous_score is None or track.score > previous_score + 1e-6)
+                        ):
+                            reported_scores[key] = track.score
                             self.recognized.emit(
                                 {
                                     "time": datetime.now().strftime("%H:%M:%S"),
@@ -202,6 +207,7 @@ class VideoWorker(QThread):
                                     "id_card": track.id_card,
                                     "score": track.score,
                                     "quality": track.quality,
+                                    "new_track_match": previous_score is None,
                                 }
                             )
                 self.frame_ready.emit(self._qimage(frame, last_result))
@@ -227,6 +233,7 @@ class MainWindow(QMainWindow):
         self.engine: FaceEngine | None = None
         self.enrollment: EnrollmentService | None = None
         self.worker: VideoWorker | None = None
+        self.video_matches = VideoMatchList()
         self.setWindowTitle("Face Matching · GPU 视频人脸比对")
         self.resize(1420, 880)
         self.tabs = QTabWidget()
@@ -239,13 +246,15 @@ class MainWindow(QMainWindow):
 
     def initialize(self) -> bool:
         try:
-            gpu_status = assert_cuda_available()
+            gpu_status = assert_gpu_available(
+                self.config.gpu_backend, self.config.gpu_device_id
+            )
             try:
                 required_paths(self.config.model_profile)
             except ModelMissingError:
                 if is_frozen_app():
                     raise ModelMissingError(
-                        "离线便携包缺少当前模型。请使用完整的 v2.3 离线包，"
+                        "离线便携包缺少当前模型。请使用完整的 v2.4 离线包，"
                         "或在联网构建机上重新打包；目标机不会尝试联网下载。"
                     )
                 profile = profile_spec(self.config.model_profile)
@@ -263,9 +272,21 @@ class MainWindow(QMainWindow):
             self.enrollment = EnrollmentService(self.database, self.engine)
             self.statusBar().showMessage(f"{gpu_status} · CPU fallback 已禁用")
             self.gpu_label.setText(f"✅ {gpu_status}\nCPU fallback：已禁用")
-            self.model_label.setText(f"✅ {profile_spec(self.config.model_profile).title}")
+            self.model_label.setText(
+                f"✅ {profile_spec(self.config.model_profile).title}\n"
+                f"特征版本：{self.engine.model_id}"
+            )
             self._set_video_enabled(True)
             self.refresh_people()
+            if self.database.list_stored_samples() and self.engine.matcher.person_count == 0:
+                QMessageBox.warning(
+                    self,
+                    "需要重建特征",
+                    "当前特征版本没有可用底库:\n"
+                    f"{self.engine.model_id}\n\n"
+                    "请在“人员库”点击“重建当前模型特征”。"
+                    "在重建前，视频不会产生人员命中。",
+                )
             return True
         except (FaceMatchingError, OSError, ValueError) as exc:
             QMessageBox.critical(self, "无法启动 GPU 推理", str(exc))
@@ -318,6 +339,7 @@ class MainWindow(QMainWindow):
         self.events.setHorizontalHeaderLabels(["时间", "轨迹", "姓名", "身份证号", "相似度", "质量"])
         self.events.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.events.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.events.setToolTip("每人保留整段视频中的最高分，按相似度从高到低排列")
         body = QHBoxLayout()
         body.addWidget(self.video_label, 3)
         body.addWidget(self.events, 2)
@@ -367,6 +389,16 @@ class MainWindow(QMainWindow):
             spec = PROFILES[key]
             self.profile_combo.addItem(spec.title, key)
         self.profile_combo.setCurrentIndex(max(0, self.profile_combo.findData(self.config.model_profile)))
+        self.backend_combo = QComboBox()
+        self.backend_combo.addItem("自动（优先 NVIDIA CUDA）", "auto")
+        self.backend_combo.addItem("NVIDIA CUDA", "cuda")
+        self.backend_combo.addItem("Intel OpenVINO GPU", "openvino")
+        self.backend_combo.setCurrentIndex(
+            max(0, self.backend_combo.findData(self.config.gpu_backend))
+        )
+        self.gpu_device_id = QSpinBox()
+        self.gpu_device_id.setRange(0, 15)
+        self.gpu_device_id.setValue(self.config.gpu_device_id)
         self.detector_threshold = QDoubleSpinBox()
         self.detector_threshold.setRange(0.1, 0.95)
         self.detector_threshold.setSingleStep(0.05)
@@ -404,6 +436,8 @@ class MainWindow(QMainWindow):
         save.clicked.connect(self.save_settings)
         form = QFormLayout()
         form.addRow("识别模型：", self.profile_combo)
+        form.addRow("GPU 后端：", self.backend_combo)
+        form.addRow("GPU 编号：", self.gpu_device_id)
         form.addRow("检测置信度：", self.detector_threshold)
         form.addRow("身份相似度阈值：", self.match_threshold)
         form.addRow("第一/第二名最小差值：", self.match_margin)
@@ -442,6 +476,7 @@ class MainWindow(QMainWindow):
         if not self.stop_video():
             return
         self.events.setRowCount(0)
+        self.video_matches.clear()
         self.worker = VideoWorker(self.engine, source, self.config.frame_interval)
         self.worker.frame_ready.connect(self._show_frame)
         self.worker.recognized.connect(self._on_recognized)
@@ -471,6 +506,9 @@ class MainWindow(QMainWindow):
     def _video_finished(self) -> None:
         self.start_button.setEnabled(bool(self.engine))
         self.stop_button.setEnabled(False)
+        self.statusBar().showMessage(
+            f"视频处理完成 · 匹配 {len(self.video_matches)} 人 · 已按 score 倒序排列"
+        )
 
     def _show_frame(self, image: QImage) -> None:
         pixmap = QPixmap.fromImage(image)
@@ -479,19 +517,22 @@ class MainWindow(QMainWindow):
         )
 
     def _on_recognized(self, event: dict) -> None:
-        row = self.events.rowCount()
-        self.events.insertRow(row)
-        values = (
-            event["time"],
-            f'#{event["track_id"]}',
-            event["name"],
-            event["id_card"],
-            f'{event["score"]:.3f}',
-            f'{event["quality"]:.3f}',
-        )
-        for column, value in enumerate(values):
-            self.events.setItem(row, column, QTableWidgetItem(value))
-        if self.database:
+        changed = self.video_matches.update(event)
+        if changed:
+            ranked = self.video_matches.ranked()
+            self.events.setRowCount(len(ranked))
+            for row, match in enumerate(ranked):
+                values = (
+                    match.time,
+                    f"#{match.track_id}",
+                    match.name,
+                    match.id_card,
+                    f"{match.score:.3f}",
+                    f"{match.quality:.3f}",
+                )
+                for column, value in enumerate(values):
+                    self.events.setItem(row, column, QTableWidgetItem(value))
+        if self.database and event.get("new_track_match", True):
             self.database.log_event(
                 event["person_id"], self.source_edit.text().strip(), event["track_id"],
                 event["score"], event["quality"]
@@ -604,7 +645,7 @@ class MainWindow(QMainWindow):
             try:
                 feature = self.engine.enrollment_feature(image)
                 self.database.update_sample_feature(
-                    sample.id, feature.embedding, self.engine.profile.model_id, feature.quality.total
+                    sample.id, feature.embedding, self.engine.model_id, feature.quality.total
                 )
             except Exception as exc:
                 failures.append(Path(sample.image_path).name + f"（{exc}）")
@@ -634,19 +675,27 @@ class MainWindow(QMainWindow):
 
     def save_settings(self) -> None:
         new_profile = self.profile_combo.currentData()
+        new_backend = self.backend_combo.currentData()
+        new_gpu_device_id = self.gpu_device_id.value()
+        new_mirror_augmentation = self.mirror_augmentation.isChecked()
         changed_model = new_profile != self.config.model_profile
+        changed_backend = new_backend != self.config.gpu_backend
+        changed_gpu_device = new_gpu_device_id != self.config.gpu_device_id
+        changed_tta = new_mirror_augmentation != self.config.mirror_augmentation
         self.config.model_profile = new_profile
+        self.config.gpu_backend = new_backend
+        self.config.gpu_device_id = new_gpu_device_id
         self.config.detector_threshold = self.detector_threshold.value()
         self.config.match_threshold = self.match_threshold.value()
         self.config.match_margin = self.match_margin.value()
         self.config.min_quality = self.min_quality.value()
         self.config.detector_size = self.detector_size.currentData()
         self.config.min_face_size = self.min_face_size.value()
-        self.config.mirror_augmentation = self.mirror_augmentation.isChecked()
+        self.config.mirror_augmentation = new_mirror_augmentation
         self.config.frame_interval = self.frame_interval.value()
         try:
             self.config.save()
-            if self.engine and not changed_model:
+            if self.engine:
                 self.engine.detector.threshold = self.config.detector_threshold
                 self.engine.matcher.threshold = self.config.match_threshold
                 self.engine.matcher.min_margin = self.config.match_margin
@@ -654,7 +703,14 @@ class MainWindow(QMainWindow):
             if self.engine and self.config.detector_size != self.engine.detector.input_size[0]:
                 message += "\n\n检测输入尺寸将在重启后生效。"
             if changed_model:
-                message += "\n\n模型将在重启后生效；首次启动会下载权重。随后请在人员库点击“重建当前模型特征”。"
+                message += "\n\n模型将在重启后生效；首次启动会下载权重。"
+            if changed_backend or changed_gpu_device:
+                message += "\n\nGPU 后端/编号将在重启后生效。"
+            if changed_tta:
+                state = "开启" if new_mirror_augmentation else "关闭"
+                message += f"\n\n镜像 TTA 将在重启后{state}，特征版本会改变。"
+            if changed_model or changed_tta:
+                message += "\n重启后必须在人员库点击“重建当前模型特征”。"
             QMessageBox.information(self, "设置", message)
         except Exception as exc:
             QMessageBox.critical(self, "设置无效", str(exc))

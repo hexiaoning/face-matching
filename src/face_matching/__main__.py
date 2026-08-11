@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from .config import AppConfig
-from .gpu import assert_cuda_available
+from .gpu import assert_gpu_available
 from .models import PROFILES, available_profiles, download_profile, required_paths
 from .paths import config_path, is_frozen_app
 
@@ -22,7 +22,7 @@ def _write_report(path: Path | None, payload: dict[str, object]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="GPU-only 视频人脸比对")
-    parser.add_argument("--check-gpu", action="store_true", help="检查 CUDA 并退出")
+    parser.add_argument("--check-gpu", action="store_true", help="检查 CUDA/OpenVINO GPU 并退出")
     parser.add_argument("--download-models", action="store_true", help="下载模型并退出")
     parser.add_argument("--verify-models", action="store_true", help="校验模型 SHA-256 并退出")
     parser.add_argument("--diagnose", action="store_true", help="校验模型并执行真实 GPU 推理")
@@ -59,7 +59,15 @@ def main(argv: list[str] | None = None) -> int:
         try:
             from .diagnostics import run_diagnostics
 
-            _write_report(args.report, run_diagnostics(config.model_profile))
+            _write_report(
+                args.report,
+                run_diagnostics(
+                    config.model_profile,
+                    backend=config.gpu_backend,
+                    device_id=config.gpu_device_id,
+                    mirror_augmentation=config.mirror_augmentation,
+                ),
+            )
             return 0
         except Exception as exc:
             _write_report(args.report, {
@@ -70,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     if args.check_gpu:
         try:
-            print(assert_cuda_available())
+            print(assert_gpu_available(config.gpu_backend, config.gpu_device_id))
             return 0
         except Exception as exc:
             print(f"GPU 不可用: {exc}", file=sys.stderr)

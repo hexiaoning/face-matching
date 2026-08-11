@@ -42,7 +42,7 @@ class EnrollmentService:
                     FaceSampleInput(
                         image_path=str(destination),
                         embedding=feature.embedding,
-                        model_id=self.engine.profile.model_id,
+                        model_id=self.engine.model_id,
                         quality=feature.quality.total,
                     )
                 )

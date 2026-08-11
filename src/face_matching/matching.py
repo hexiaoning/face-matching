@@ -46,6 +46,10 @@ class GalleryMatcher:
         self.centroid_matrix = np.empty((0, 0), dtype=np.float32)
         self.refresh()
 
+    @property
+    def person_count(self) -> int:
+        return len(self.identities)
+
     def refresh(self) -> None:
         grouped: dict[str, list[GallerySample]] = {}
         for sample in self.database.list_gallery(self.model_id):

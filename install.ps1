@@ -63,19 +63,19 @@ if (-not (Test-Path $VenvPython)) {
 Write-Host "[2/4] Updating installer..." -ForegroundColor Cyan
 Invoke-CheckedPython -Executable $VenvPython -Arguments @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
 
-Write-Host "[3/4] Installing GUI, ONNX Runtime GPU, and bundled CUDA/cuDNN runtime DLLs..." -ForegroundColor Cyan
+Write-Host "[3/4] Installing GUI, CUDA, OpenVINO GPU, and bundled runtime DLLs..." -ForegroundColor Cyan
 # Avoid two distributions racing to provide the same onnxruntime Python package.
 Invoke-CheckedPython -Executable $VenvPython -Arguments @("-m", "pip", "uninstall", "-y", "onnxruntime", "onnxruntime-directml")
 Invoke-CheckedPython -Executable $VenvPython -Arguments @("-m", "pip", "install", "--upgrade", "-e", $ProjectRoot)
 
 if (-not $SkipGpuCheck) {
-    Write-Host "[4/4] Verifying CUDA-only inference..." -ForegroundColor Cyan
+    Write-Host "[4/4] Verifying CUDA/OpenVINO GPU-only inference..." -ForegroundColor Cyan
     & $VenvPython -m face_matching --check-gpu
     if ($LASTEXITCODE -ne 0) {
-        throw "CUDA GPU verification failed. CPU fallback is intentionally disabled. Update the NVIDIA driver and rerun install.cmd."
+        throw "GPU verification failed. CPU fallback is intentionally disabled. Update the NVIDIA/Intel display driver and rerun install.cmd."
     }
 } else {
-    Write-Warning "GPU verification was skipped. The application will still refuse to start without CUDA."
+    Write-Warning "GPU verification was skipped. The application will still refuse to start without CUDA or OpenVINO GPU."
 }
 
 Write-Host "Ready. Double-click run.cmd to start." -ForegroundColor Green

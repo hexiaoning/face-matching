@@ -4,31 +4,36 @@ import json
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
+from .models import feature_model_id
 from .paths import config_path
 
 
 @dataclass(slots=True)
 class AppConfig:
     model_profile: str = "lvface-b"
+    gpu_backend: str = "auto"
     gpu_device_id: int = 0
-    detector_size: int = 640
-    detector_threshold: float = 0.50
+    detector_size: int = 960
+    detector_threshold: float = 0.40
     nms_threshold: float = 0.40
     match_threshold: float = 0.45
     match_margin: float = 0.06
-    min_face_size: int = 28
+    min_face_size: int = 32
     min_quality: float = 0.22
-    frame_interval: int = 3
+    enrollment_min_quality: float = 0.30
+    frame_interval: int = 1
     mirror_augmentation: bool = True
     min_track_observations: int = 3
-    track_top_k: int = 8
+    track_top_k: int = 10
     track_max_misses: int = 12
-    track_consistency_threshold: float = 0.20
+    track_consistency_threshold: float = 0.12
     confirmation_matches: int = 2
 
     def validate(self) -> "AppConfig":
         if self.model_profile not in {"lvface-b", "auraface"}:
             raise ValueError(f"未知模型配置: {self.model_profile}")
+        if self.gpu_backend not in {"auto", "cuda", "openvino"}:
+            raise ValueError("gpu_backend 必须是 auto/cuda/openvino")
         if self.gpu_device_id < 0:
             raise ValueError("GPU 编号不能为负数")
         if self.detector_size not in {320, 480, 640, 768, 960, 1280}:
@@ -38,6 +43,7 @@ class AppConfig:
             "nms_threshold",
             "match_threshold",
             "min_quality",
+            "enrollment_min_quality",
             "track_consistency_threshold",
         ):
             value = float(getattr(self, name))
@@ -56,6 +62,10 @@ class AppConfig:
         if self.track_max_misses < 1 or self.confirmation_matches < 1:
             raise ValueError("轨迹保留和确认次数必须大于 0")
         return self
+
+    @property
+    def feature_model_id(self) -> str:
+        return feature_model_id(self.model_profile, self.mirror_augmentation)
 
     @classmethod
     def load(cls, path: Path | None = None) -> "AppConfig":
