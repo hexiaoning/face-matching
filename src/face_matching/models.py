@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 from .errors import ModelMissingError
-from .paths import models_dir
+from .paths import models_dir, packaged_models_dir
 
 ProgressCallback = Callable[[str, int, int], None]
 CancelCallback = Callable[[], bool]
@@ -104,17 +104,34 @@ def is_valid_model(path: Path, spec: ModelFile, verify_hash: bool = False) -> bo
 
 def required_paths(profile: str, root: Path | None = None, verify_hash: bool = False) -> tuple[Path, Path]:
     spec = profile_spec(profile)
-    directory = root or models_dir()
-    detector = directory / spec.detector.name
-    recognizer = directory / spec.recognizer.name
-    missing = [
-        item.name
-        for item, path in ((spec.detector, detector), (spec.recognizer, recognizer))
-        if not is_valid_model(path, item, verify_hash=verify_hash)
-    ]
+    directories = [root] if root is not None else [models_dir(), packaged_models_dir()]
+    candidates = [directory for directory in directories if directory is not None]
+
+    def locate(item: ModelFile) -> Path | None:
+        for directory in candidates:
+            path = directory / item.name
+            if is_valid_model(path, item, verify_hash=verify_hash):
+                return path
+        return None
+
+    detector = locate(spec.detector)
+    recognizer = locate(spec.recognizer)
+    missing = [item.name for item, path in ((spec.detector, detector), (spec.recognizer, recognizer)) if path is None]
     if missing:
         raise ModelMissingError("缺少或损坏的模型文件: " + ", ".join(missing))
+    assert detector is not None and recognizer is not None
     return detector, recognizer
+
+
+def available_profiles(root: Path | None = None) -> list[str]:
+    available: list[str] = []
+    for profile in PROFILES:
+        try:
+            required_paths(profile, root=root)
+            available.append(profile)
+        except ModelMissingError:
+            pass
+    return available
 
 
 def _download_one(

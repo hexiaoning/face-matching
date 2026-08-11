@@ -79,6 +79,7 @@ class FaceEngine:
 
     def refresh_gallery(self) -> None:
         self.matcher.refresh()
+        self.tracker.invalidate_identities()
 
     def enrollment_feature(self, image: np.ndarray) -> EnrollmentFeature:
         detections = self.detector.detect(image)
@@ -148,9 +149,17 @@ class FaceEngine:
         for track in tracks:
             if len(track.observations) < self.config.min_track_observations:
                 continue
-            aggregate = track.aggregate(self.config.track_top_k)
+            if track.embedding_version == track.matched_embedding_version:
+                continue
+            aggregate = track.aggregate(
+                self.config.track_top_k,
+                self.config.track_consistency_threshold,
+            )
             if aggregate is not None:
-                track.apply_match(self.matcher.match(aggregate))
+                track.apply_match(
+                    self.matcher.match(aggregate),
+                    consensus=self.config.confirmation_matches,
+                )
         views = tuple(
             TrackView(
                 id=track.id,

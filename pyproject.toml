@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "face-matching"
-version = "0.1.0"
+version = "2.3.0"
 description = "GPU-only desktop video face matching for Windows"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3", "pytest-cov>=6"]
+build = ["pytest>=8.3", "pyinstaller>=6.15,<7"]
 
 [project.scripts]
 face-matching = "face_matching.__main__:main"

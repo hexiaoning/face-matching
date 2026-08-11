@@ -41,6 +41,8 @@ class GalleryMatcher:
         self.identities: list[_Identity] = []
         self.sample_matrix = np.empty((0, 0), dtype=np.float32)
         self.sample_owners = np.empty(0, dtype=np.intp)
+        self.sample_qualities = np.empty(0, dtype=np.float32)
+        self.identity_sample_indices: list[np.ndarray] = []
         self.centroid_matrix = np.empty((0, 0), dtype=np.float32)
         self.refresh()
 
@@ -51,6 +53,8 @@ class GalleryMatcher:
         identities: list[_Identity] = []
         sample_rows: list[np.ndarray] = []
         sample_owners: list[int] = []
+        sample_qualities: list[float] = []
+        identity_sample_indices: list[np.ndarray] = []
         centroid_rows: list[np.ndarray] = []
         for samples in grouped.values():
             first = samples[0]
@@ -62,17 +66,23 @@ class GalleryMatcher:
             ))
             identity_index = len(identities)
             identities.append(_Identity(first.person_id, first.name, first.id_card))
+            start = len(sample_rows)
             sample_rows.extend(matrix)
             sample_owners.extend([identity_index] * len(matrix))
+            sample_qualities.extend(max(float(item.quality), 0.05) for item in samples)
+            identity_sample_indices.append(np.arange(start, start + len(matrix), dtype=np.intp))
             centroid_rows.append(centroid)
         self.identities = identities
+        self.identity_sample_indices = identity_sample_indices
         if identities:
             self.sample_matrix = np.vstack(sample_rows).astype(np.float32, copy=False)
             self.sample_owners = np.asarray(sample_owners, dtype=np.intp)
+            self.sample_qualities = np.asarray(sample_qualities, dtype=np.float32)
             self.centroid_matrix = np.vstack(centroid_rows).astype(np.float32, copy=False)
         else:
             self.sample_matrix = np.empty((0, 0), dtype=np.float32)
             self.sample_owners = np.empty(0, dtype=np.intp)
+            self.sample_qualities = np.empty(0, dtype=np.float32)
             self.centroid_matrix = np.empty((0, 0), dtype=np.float32)
 
     def match(self, embedding: np.ndarray) -> MatchResult:
@@ -85,7 +95,18 @@ class GalleryMatcher:
         best_samples = np.full(len(self.identities), -1.0, dtype=np.float32)
         np.maximum.at(best_samples, self.sample_owners, sample_scores)
         centroid_scores = self.centroid_matrix @ query
-        scores = 0.65 * best_samples + 0.35 * centroid_scores
+        top_means = np.empty(len(self.identities), dtype=np.float32)
+        for identity_index, indices in enumerate(self.identity_sample_indices):
+            values = sample_scores[indices]
+            count = min(3, len(indices))
+            top_local = np.argpartition(values, -count)[-count:]
+            selected = indices[top_local]
+            top_means[identity_index] = np.average(
+                sample_scores[selected], weights=self.sample_qualities[selected]
+            )
+        # Best-view matching preserves recall for pose changes; the top-three
+        # mean and centroid make a single accidental enrollment less decisive.
+        scores = 0.70 * best_samples + 0.25 * top_means + 0.05 * centroid_scores
         order = np.argsort(scores)[::-1]
         best_index = int(order[0])
         best_score = float(scores[best_index])

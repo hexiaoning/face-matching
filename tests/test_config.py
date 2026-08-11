@@ -29,6 +29,8 @@ def test_config_round_trip_and_ignores_future_keys(tmp_path):
         ("min_face_size", 8),
         ("frame_interval", 0),
         ("mirror_augmentation", 1),
+        ("track_consistency_threshold", 1.1),
+        ("confirmation_matches", 0),
     ],
 )
 def test_config_rejects_invalid_values(field, value):

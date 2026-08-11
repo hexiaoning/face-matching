@@ -40,7 +40,8 @@ from ..engine import FaceEngine, FrameResult
 from ..enrollment import EnrollmentService
 from ..errors import FaceMatchingError, ModelMissingError
 from ..gpu import assert_cuda_available
-from ..models import PROFILES, download_profile, profile_spec, required_paths
+from ..models import PROFILES, available_profiles, download_profile, profile_spec, required_paths
+from ..paths import is_frozen_app
 from ..privacy import mask_id_card, redact_source_credentials
 from ..vision.io import read_image
 
@@ -243,6 +244,11 @@ class MainWindow(QMainWindow):
             try:
                 required_paths(self.config.model_profile)
             except ModelMissingError:
+                if is_frozen_app():
+                    raise ModelMissingError(
+                        "离线便携包缺少当前模型。请使用完整的 v2.3 离线包，"
+                        "或在联网构建机上重新打包；目标机不会尝试联网下载。"
+                    )
                 profile = profile_spec(self.config.model_profile)
                 answer = QMessageBox.question(
                     self,
@@ -357,7 +363,9 @@ class MainWindow(QMainWindow):
         tab = QWidget()
         self.tabs.addTab(tab, "设置")
         self.profile_combo = QComboBox()
-        for key, spec in PROFILES.items():
+        selectable_profiles = available_profiles() if is_frozen_app() else list(PROFILES)
+        for key in selectable_profiles:
+            spec = PROFILES[key]
             self.profile_combo.addItem(spec.title, key)
         self.profile_combo.setCurrentIndex(max(0, self.profile_combo.findData(self.config.model_profile)))
         self.detector_threshold = QDoubleSpinBox()

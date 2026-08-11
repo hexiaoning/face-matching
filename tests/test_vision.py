@@ -6,7 +6,7 @@ import pytest
 from face_matching.matching import MatchResult
 from face_matching.vision.detector import distance_to_bbox, distance_to_landmarks, nms
 from face_matching.vision.recognizer import FaceEmbedder, l2_normalize
-from face_matching.vision.tracker import FaceTracker, Observation, bbox_iou
+from face_matching.vision.tracker import FaceTracker, Observation, bbox_iou, robust_aggregate
 
 
 class FakeSession:
@@ -88,6 +88,13 @@ def test_tracker_aggregates_quality_and_requires_match_consensus():
     match = MatchResult(True, "person", "Alice", "ID", 0.8, 0.2, 0.6)
     track.apply_match(match)
     assert track.person_id is None
+    # Reusing the same aggregate must not manufacture a second confirmation.
+    track.apply_match(match)
+    assert track.person_id is None
+    tracker.update(
+        [Observation(np.asarray([1, 0, 21, 20]), 0.9, embedding, 0.8)],
+        4,
+    )
     track.apply_match(match)
     assert track.person_id == "person"
     assert track.name == "Alice"
@@ -97,3 +104,32 @@ def test_bbox_iou_handles_disjoint_and_equal_boxes():
     box = np.asarray([0, 0, 10, 10], dtype=np.float32)
     assert bbox_iou(box, box) == pytest.approx(1.0)
     assert bbox_iou(box, np.asarray([20, 20, 30, 30])) == 0.0
+
+
+def test_robust_aggregate_rejects_identity_switch_outlier():
+    inlier_a = l2_normalize(np.asarray([1.0, 0.0], dtype=np.float32))
+    inlier_b = l2_normalize(np.asarray([0.98, 0.10], dtype=np.float32))
+    outlier = l2_normalize(np.asarray([0.0, 1.0], dtype=np.float32))
+
+    aggregate, quality = robust_aggregate(
+        [(inlier_a, 0.8), (outlier, 0.95), (inlier_b, 0.75)],
+        top_k=3,
+        min_similarity=0.20,
+    )
+
+    assert aggregate @ inlier_a > 0.99
+    assert aggregate @ outlier < 0.20
+    assert 0.7 < quality < 0.9
+
+
+def test_tracker_motion_prediction_preserves_fast_moving_track():
+    tracker = FaceTracker(max_misses=2)
+    embedding = l2_normalize(np.asarray([1.0, 0.0], dtype=np.float32))
+    ids = []
+    for frame, x in enumerate((0, 9, 18), 1):
+        tracks = tracker.update(
+            [Observation(np.asarray([x, 0, x + 10, 10]), 0.9, embedding, 0.8)],
+            frame,
+        )
+        ids.append(tracks[-1].id)
+    assert ids == [1, 1, 1]

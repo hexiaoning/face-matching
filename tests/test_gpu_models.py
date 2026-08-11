@@ -4,7 +4,8 @@ import pytest
 
 from face_matching import gpu
 from face_matching.errors import GPUUnavailableError
-from face_matching.models import ModelFile, file_sha256, is_valid_model
+from face_matching import models
+from face_matching.models import ModelFile, ModelProfile, file_sha256, is_valid_model
 
 
 class FakeOptions:
@@ -78,3 +79,32 @@ def test_model_file_size_and_sha256_are_verified(tmp_path):
     assert is_valid_model(target, spec, verify_hash=True)
     target.write_bytes(b"tampered payload")
     assert not is_valid_model(target, spec, verify_hash=True)
+
+
+def test_required_paths_falls_back_to_packaged_models(monkeypatch, tmp_path):
+    user_models = tmp_path / "user-models"
+    bundled_models = tmp_path / "bundle" / "models"
+    bundled_models.mkdir(parents=True)
+    detector = bundled_models / "detector.onnx"
+    recognizer = bundled_models / "recognizer.onnx"
+    detector.write_bytes(b"detector")
+    recognizer.write_bytes(b"recognizer")
+    detector_spec = ModelFile(
+        detector.name, "https://example.invalid/detector", file_sha256(detector), detector.stat().st_size
+    )
+    recognizer_spec = ModelFile(
+        recognizer.name, "https://example.invalid/recognizer", file_sha256(recognizer), recognizer.stat().st_size
+    )
+    monkeypatch.setitem(
+        models.PROFILES,
+        "test-bundle",
+        ModelProfile(
+            "test-bundle", "test", detector_spec, recognizer_spec, "test-v1", "test", True, "",
+        ),
+    )
+    monkeypatch.setattr(models, "models_dir", lambda: user_models)
+    monkeypatch.setattr(models, "packaged_models_dir", lambda: bundled_models)
+
+    paths = models.required_paths("test-bundle", verify_hash=True)
+
+    assert paths == (detector, recognizer)

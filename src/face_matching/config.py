@@ -22,7 +22,9 @@ class AppConfig:
     mirror_augmentation: bool = True
     min_track_observations: int = 3
     track_top_k: int = 8
-    track_max_misses: int = 5
+    track_max_misses: int = 12
+    track_consistency_threshold: float = 0.20
+    confirmation_matches: int = 2
 
     def validate(self) -> "AppConfig":
         if self.model_profile not in {"lvface-b", "auraface"}:
@@ -31,7 +33,13 @@ class AppConfig:
             raise ValueError("GPU 编号不能为负数")
         if self.detector_size not in {320, 480, 640, 768, 960, 1280}:
             raise ValueError("检测尺寸必须为 320/480/640/768/960/1280")
-        for name in ("detector_threshold", "nms_threshold", "match_threshold", "min_quality"):
+        for name in (
+            "detector_threshold",
+            "nms_threshold",
+            "match_threshold",
+            "min_quality",
+            "track_consistency_threshold",
+        ):
             value = float(getattr(self, name))
             if not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} 必须在 0 到 1 之间")
@@ -45,6 +53,8 @@ class AppConfig:
             raise ValueError("mirror_augmentation 必须是布尔值")
         if self.min_track_observations < 1 or self.track_top_k < 1:
             raise ValueError("轨迹参数必须大于 0")
+        if self.track_max_misses < 1 or self.confirmation_matches < 1:
+            raise ValueError("轨迹保留和确认次数必须大于 0")
         return self
 
     @classmethod

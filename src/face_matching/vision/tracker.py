@@ -19,6 +19,30 @@ def bbox_iou(first: np.ndarray, second: np.ndarray) -> float:
     return intersection / max(first_area + second_area - intersection, 1e-9)
 
 
+def robust_aggregate(
+    observations: list[tuple[np.ndarray, float]],
+    top_k: int = 8,
+    min_similarity: float = 0.20,
+) -> tuple[np.ndarray, float] | None:
+    """Fuse high-quality samples while rejecting a likely identity-switch outlier."""
+    if not observations:
+        return None
+    selected = sorted(observations, key=lambda item: item[1], reverse=True)[:top_k]
+    matrix = np.vstack([l2_normalize(item[0]) for item in selected]).astype(np.float32)
+    qualities = np.asarray([max(float(item[1]), 0.05) for item in selected], dtype=np.float32)
+    if len(matrix) >= 3:
+        cosine = matrix @ matrix.T
+        medoid = int(np.argmax(np.average(cosine, axis=1, weights=qualities)))
+        consistent = cosine[medoid] >= float(min_similarity)
+        if np.count_nonzero(consistent) >= 2:
+            matrix = matrix[consistent]
+            qualities = qualities[consistent]
+    weights = qualities**2
+    aggregate = l2_normalize(np.average(matrix, axis=0, weights=weights))
+    quality = float(np.average(qualities, weights=weights))
+    return aggregate, quality
+
+
 @dataclass(slots=True)
 class Observation:
     bbox: np.ndarray
@@ -33,6 +57,7 @@ class Track:
     bbox: np.ndarray
     last_frame: int
     misses: int = 0
+    velocity: np.ndarray = field(default_factory=lambda: np.zeros(4, dtype=np.float32))
     observations: list[tuple[np.ndarray, float]] = field(default_factory=list)
     last_embedding: np.ndarray | None = None
     name: str = "采集中"
@@ -41,42 +66,81 @@ class Track:
     score: float = 0.0
     quality: float = 0.0
     match_history: list[str] = field(default_factory=list)
+    embedding_version: int = 0
+    matched_embedding_version: int = 0
+    candidate_id: str | None = None
+    candidate_count: int = 0
+    unknown_count: int = 0
 
     def add(self, observation: Observation, frame_index: int) -> None:
-        self.bbox = np.asarray(observation.bbox, dtype=np.float32)
+        new_bbox = np.asarray(observation.bbox, dtype=np.float32)
+        delta = new_bbox - self.bbox
+        self.velocity = self.velocity * 0.65 + delta * 0.35
+        self.bbox = new_bbox
         self.last_frame = frame_index
         self.misses = 0
         if observation.embedding is not None:
             embedding = l2_normalize(observation.embedding)
             self.observations.append((embedding, float(observation.quality)))
             self.last_embedding = embedding
+            self.embedding_version += 1
             if len(self.observations) > 32:
                 self.observations = sorted(self.observations, key=lambda item: item[1], reverse=True)[:24]
 
-    def aggregate(self, top_k: int = 8) -> np.ndarray | None:
-        if not self.observations:
+    def predict(self) -> np.ndarray:
+        horizon = 1.0 + 0.25 * min(self.misses, 2)
+        return self.bbox + self.velocity * horizon
+
+    def aggregate(self, top_k: int = 8, min_similarity: float = 0.20) -> np.ndarray | None:
+        result = robust_aggregate(self.observations, top_k, min_similarity)
+        if result is None:
             return None
-        selected = sorted(self.observations, key=lambda item: item[1], reverse=True)[:top_k]
-        matrix = np.vstack([item[0] for item in selected])
-        weights = np.square(np.maximum([item[1] for item in selected], 0.05))
-        self.quality = float(np.average([item[1] for item in selected], weights=weights))
-        return l2_normalize(np.average(matrix, axis=0, weights=weights))
+        aggregate, self.quality = result
+        return aggregate
 
     def apply_match(self, match: MatchResult, consensus: int = 2) -> None:
+        if self.matched_embedding_version == self.embedding_version:
+            return
+        self.matched_embedding_version = self.embedding_version
         self.score = match.score
         self.match_history.append(match.person_id or "")
         self.match_history = self.match_history[-5:]
-        if match.accepted:
-            votes = self.match_history[-3:].count(match.person_id or "")
-            if votes >= consensus:
+        if match.accepted and match.person_id:
+            self.unknown_count = 0
+            if self.person_id is not None and self.person_id != match.person_id:
+                self.name = "确认中"
+                self.person_id = None
+                self.id_card = ""
+            if self.candidate_id == match.person_id:
+                self.candidate_count += 1
+            else:
+                self.candidate_id = match.person_id
+                self.candidate_count = 1
+            if self.candidate_count >= consensus:
                 self.name = match.name
                 self.person_id = match.person_id
                 self.id_card = match.id_card
             elif self.person_id is None:
                 self.name = "确认中"
-        elif self.person_id is None:
-            self.name = "陌生人"
-            self.id_card = ""
+        else:
+            self.unknown_count += 1
+            self.candidate_id = None
+            self.candidate_count = 0
+            if self.unknown_count >= 3 or self.person_id is None:
+                self.name = "陌生人"
+                self.person_id = None
+                self.id_card = ""
+
+    def invalidate_identity(self) -> None:
+        self.name = "采集中"
+        self.person_id = None
+        self.id_card = ""
+        self.score = 0.0
+        self.match_history.clear()
+        self.candidate_id = None
+        self.candidate_count = 0
+        self.unknown_count = 0
+        self.matched_embedding_version = -1
 
 
 class FaceTracker:
@@ -89,14 +153,26 @@ class FaceTracker:
         self.tracks.clear()
         self._next_id = 1
 
+    def invalidate_identities(self) -> None:
+        for track in self.tracks.values():
+            track.invalidate_identity()
+
     def _association_score(self, track: Track, observation: Observation) -> float:
-        overlap = bbox_iou(track.bbox, observation.bbox)
+        predicted = track.predict()
+        overlap = bbox_iou(predicted, observation.bbox)
         similarity = -1.0
         if track.last_embedding is not None and observation.embedding is not None:
             similarity = float(track.last_embedding @ l2_normalize(observation.embedding))
-        if overlap < 0.08 and similarity < 0.35:
+        pcx = (predicted[0] + predicted[2]) * 0.5
+        pcy = (predicted[1] + predicted[3]) * 0.5
+        ocx = (observation.bbox[0] + observation.bbox[2]) * 0.5
+        ocy = (observation.bbox[1] + observation.bbox[3]) * 0.5
+        diagonal = max(float(np.hypot(predicted[2] - predicted[0], predicted[3] - predicted[1])), 1.0)
+        distance = float(np.hypot(ocx - pcx, ocy - pcy)) / diagonal
+        if overlap < 0.06 and similarity < 0.35 and distance > 0.55:
             return -1.0
-        return 0.65 * overlap + 0.35 * max(similarity, 0.0)
+        proximity = max(0.0, 1.0 - distance)
+        return 0.55 * overlap + 0.25 * max(similarity, 0.0) + 0.20 * proximity
 
     def update(self, observations: list[Observation], frame_index: int) -> list[Track]:
         for track in self.tracks.values():

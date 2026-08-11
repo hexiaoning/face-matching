@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 
@@ -23,6 +24,21 @@ def ensure_app_dirs() -> Path:
 
 def models_dir() -> Path:
     return ensure_app_dirs() / "models"
+
+
+def is_frozen_app() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
+def packaged_models_dir() -> Path | None:
+    """Return the read-only model directory embedded in a portable build."""
+    override = os.environ.get("FACE_MATCHING_BUNDLED_MODELS")
+    if override:
+        return Path(override).expanduser().resolve()
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root:
+        return Path(bundle_root) / "models"
+    return None
 
 
 def data_dir() -> Path:
