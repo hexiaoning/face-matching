@@ -19,6 +19,143 @@ class MatchResult:
     margin: float
 
 
+@dataclass(frozen=True, slots=True)
+class TargetMatchResult:
+    """Evidence-backed result for one target versus one video track."""
+
+    decision: str
+    score: float
+    best_score: float
+    support: int
+    observations: int
+    evidence: int
+
+    @property
+    def accepted(self) -> bool:
+        return self.decision == "confirmed"
+
+    @property
+    def review(self) -> bool:
+        return self.decision == "review"
+
+
+@dataclass(frozen=True, slots=True)
+class TargetObservation:
+    """One real video-frame observation used by target retrieval."""
+
+    embeddings: tuple[np.ndarray, ...]
+    quality: float
+    timestamp: float
+    pose: float = 0.0
+
+
+class TargetMatcher:
+    """One-to-one target search using multiple reference and track views.
+
+    This intentionally differs from gallery identification: there is no
+    first/second identity margin.  A track is confirmed only when multiple
+    independently embedded frames support it, while weaker tracks remain
+    visible for human review instead of being discarded as "unknown".
+    """
+
+    def __init__(
+        self,
+        references: list[np.ndarray],
+        threshold: float = 0.19,
+        review_threshold: float = 0.12,
+        min_support: int = 2,
+        top_k: int = 5,
+        min_evidence_gap: float = 0.75,
+        consistency_threshold: float = 0.12,
+        auto_confirm: bool = False,
+    ) -> None:
+        if not references:
+            raise ValueError("目标人物至少需要一个人脸特征")
+        if review_threshold >= threshold:
+            raise ValueError("候选复核阈值必须低于目标确认阈值")
+        self.reference_matrix = np.vstack([l2_normalize(item) for item in references]).astype(
+            np.float32
+        )
+        self.threshold = float(threshold)
+        self.review_threshold = float(review_threshold)
+        self.min_support = max(1, int(min_support))
+        self.top_k = max(1, int(top_k))
+        self.min_evidence_gap = max(0.0, float(min_evidence_gap))
+        self.consistency_threshold = float(consistency_threshold)
+        self.auto_confirm = bool(auto_confirm)
+
+    def match(self, observations: list[TargetObservation]) -> TargetMatchResult:
+        if not observations:
+            return TargetMatchResult("low", 0.0, 0.0, 0, 0, 0)
+        qualities = np.asarray(
+            [max(float(item.quality), 0.05) for item in observations], dtype=np.float32
+        )
+        # A reference alignment set absorbs small landmark errors.  Each
+        # video frame contributes only its best alignment/reference pair, so
+        # alignment augmentation cannot fake the multi-frame support count.
+        frame_scores: list[float] = []
+        primary_embeddings: list[np.ndarray] = []
+        for observation in observations:
+            matrix = np.vstack(
+                [l2_normalize(value) for value in observation.embeddings]
+            ).astype(np.float32)
+            if matrix.shape[1] != self.reference_matrix.shape[1]:
+                raise ValueError("目标照片与视频人脸的特征维度不一致")
+            primary_embeddings.append(matrix[0])
+            frame_scores.append(float(np.max(matrix @ self.reference_matrix.T)))
+        per_observation = np.asarray(frame_scores, dtype=np.float32)
+
+        # Reject a likely tracker identity-switch cluster before accumulating
+        # evidence. The threshold remains recall-oriented for difficult video.
+        consistent = np.arange(len(observations), dtype=np.intp)
+        if len(observations) >= 3:
+            primary_matrix = np.vstack(primary_embeddings).astype(np.float32)
+            cosine = primary_matrix @ primary_matrix.T
+            medoid = int(np.argmax(np.average(cosine, axis=1, weights=qualities)))
+            mask = cosine[medoid] >= self.consistency_threshold
+            if np.count_nonzero(mask) >= 2:
+                consistent = np.flatnonzero(mask)
+
+        # Consecutive frames are correlated evidence. Select high-scoring
+        # observations greedily while enforcing a real media-time gap.
+        selected_values: list[int] = []
+        for index in consistent[np.argsort(per_observation[consistent])[::-1]]:
+            timestamp = float(observations[int(index)].timestamp)
+            if all(
+                abs(timestamp - float(observations[item].timestamp))
+                >= self.min_evidence_gap
+                for item in selected_values
+            ):
+                selected_values.append(int(index))
+        selected = np.asarray(selected_values[: self.top_k], dtype=np.intp)
+        if selected.size == 0:
+            selected = np.asarray([int(np.argmax(per_observation))], dtype=np.intp)
+        top_scores = per_observation[selected]
+        top_qualities = qualities[selected]
+        best_score = float(top_scores[0])
+        mean_score = float(np.average(top_scores, weights=top_qualities**2))
+        score = 0.70 * best_score + 0.30 * mean_score
+        support = int(np.count_nonzero(top_scores >= self.threshold))
+        if (
+            self.auto_confirm
+            and best_score >= self.threshold
+            and support >= self.min_support
+        ):
+            decision = "confirmed"
+        elif best_score >= self.review_threshold:
+            decision = "review"
+        else:
+            decision = "low"
+        return TargetMatchResult(
+            decision,
+            score,
+            best_score,
+            support,
+            len(observations),
+            len(selected),
+        )
+
+
 @dataclass(slots=True)
 class _Identity:
     person_id: str

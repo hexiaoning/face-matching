@@ -1,6 +1,6 @@
 # 完全离线部署
 
-`v2.4` 的正式交付物是 PyInstaller `onedir` 便携包。联网构建机负责下载和固定哈希校验；目标机不运行 `pip`、不下载模型，也不要求预装 Python、CUDA Toolkit、cuDNN 或 OpenVINO Toolkit。
+`v3.4` 的正式交付物是 PyInstaller `onedir` 便携包。联网构建机负责下载和固定哈希校验；目标机不运行 `pip`、不下载模型，也不要求预装 Python、CUDA Toolkit、cuDNN 或 OpenVINO Toolkit。
 
 ## 构建机
 
@@ -16,7 +16,7 @@
 .\scripts\build_offline_bundle.ps1 -Clean -Profiles auraface
 ```
 
-输出位于 `dist\FaceMatching-v2.4.0-windows-x64.zip`，旁边的 `.sha256` 文件校验整个压缩包；包内 `SHA256SUMS.txt` 校验每个文件。包中包含：
+输出位于 `dist\FaceMatching-v3.4.0-windows-x64.zip`，旁边的 `.sha256` 文件校验整个压缩包；包内 `SHA256SUMS.txt` 校验每个文件。包中包含：
 
 - Python 3.12 运行时和应用代码；
 - PySide6、OpenCV、NumPy；
@@ -31,13 +31,13 @@
 .\scripts\build_windows_installer.ps1
 ```
 
-产物为 `dist\FaceMatching-v2.4.0-Setup.exe`。
+产物为 `dist\FaceMatching-v3.4.0-Setup.exe`。
 
 ## 目标机
 
 目标机要求 Windows 11 x64，以及 NVIDIA RTX 或 Intel UHD/Iris/Arc GPU 和对应显卡驱动。
 
-1. 优先双击 `FaceMatching-v2.4.0-Setup.exe`，按向导安装后启动。
+1. 优先双击 `FaceMatching-v3.4.0-Setup.exe`，按向导安装后启动。
 2. 如使用便携 ZIP，解压后双击 `安装并启动 Face Matching.cmd`。它会自动校验包、GPU 和模型，通过后直接启动。
 3. `verify_offline.ps1` 仅保留给运维人员单独诊断；普通用户无需运行。
 

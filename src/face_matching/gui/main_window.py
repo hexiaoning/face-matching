@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -42,7 +43,7 @@ from ..errors import FaceMatchingError, ModelMissingError
 from ..gpu import assert_gpu_available
 from ..models import PROFILES, available_profiles, download_profile, profile_spec, required_paths
 from ..paths import is_frozen_app
-from ..results import VideoMatchList
+from ..results import TargetCandidateList, format_video_time
 from ..vision.io import read_image
 
 
@@ -116,17 +117,40 @@ class PersonInfoDialog(QDialog):
         form.addRow(buttons)
 
 
+@dataclass(slots=True)
+class _TargetTrackState:
+    track_id: int
+    start_time: str
+    end_time: str
+    best_time: str
+    decision: str = "low"
+    score: float = float("-inf")
+    best_score: float = float("-inf")
+    quality: float = 0.0
+    support: int = 0
+    observations: int = 0
+    evidence: int = 0
+    thumbnail: QImage | None = None
+
+
 class VideoWorker(QThread):
     frame_ready = Signal(QImage)
     recognized = Signal(dict)
     stats = Signal(str)
     failed = Signal(str)
 
-    def __init__(self, engine: FaceEngine, source: str, frame_interval: int) -> None:
+    def __init__(
+        self,
+        engine: FaceEngine,
+        source: str,
+        frame_interval: int,
+        fast_file_scan: bool = True,
+    ) -> None:
         super().__init__()
         self.engine = engine
         self.source = source
         self.frame_interval = max(1, int(frame_interval))
+        self.fast_file_scan = bool(fast_file_scan)
         self._running = True
 
     def stop(self) -> None:
@@ -143,11 +167,21 @@ class VideoWorker(QThread):
         painter.setFont(QFont("Microsoft YaHei UI", max(10, int(height / 55))))
         for track in result.tracks:
             x1, y1, x2, y2 = (int(value) for value in track.bbox)
-            known = track.person_id is not None
-            color = QColor("#39d98a" if known else "#ffb020")
+            if track.decision == "confirmed":
+                color = QColor("#39d98a")
+                label_name = f"目标命中 · {track.name}"
+            elif track.decision == "review":
+                color = QColor("#ffb020")
+                label_name = "待复核候选"
+            else:
+                color = QColor("#7f8c9a")
+                label_name = track.name
             painter.setPen(QPen(color, max(2, int(height / 360))))
             painter.drawRect(x1, y1, max(1, x2 - x1), max(1, y2 - y1))
-            label = f"#{track.id} {track.name}  {track.score:.2f}  Q:{track.quality:.2f}"
+            label = (
+                f"#{track.id} {label_name}  S:{track.score:.2f}  "
+                f"支持:{track.support}  Q:{track.quality:.2f}"
+            )
             metrics = painter.fontMetrics()
             label_width = metrics.horizontalAdvance(label) + 12
             label_height = metrics.height() + 6
@@ -157,6 +191,45 @@ class VideoWorker(QThread):
             painter.drawText(x1 + 6, top + metrics.ascent() + 3, label)
         painter.end()
         return image
+
+    @staticmethod
+    def _face_thumbnail(frame: object, bbox: tuple[float, float, float, float]) -> QImage:
+        height, width = frame.shape[:2]
+        x1, y1, x2, y2 = bbox
+        padding = 0.18 * max(x2 - x1, y2 - y1)
+        left = max(0, int(x1 - padding))
+        top = max(0, int(y1 - padding))
+        right = min(width, int(x2 + padding))
+        bottom = min(height, int(y2 + padding))
+        crop = frame[top:bottom, left:right]
+        if crop.size == 0:
+            crop = frame
+        crop_height, crop_width = crop.shape[:2]
+        return QImage(
+            crop.data,
+            crop_width,
+            crop_height,
+            crop.strides[0],
+            QImage.Format_BGR888,
+        ).copy()
+
+    @staticmethod
+    def _candidate_event(state: _TargetTrackState, finalized: bool = False) -> dict:
+        return {
+            "best_time": state.best_time,
+            "start_time": state.start_time,
+            "end_time": state.end_time,
+            "track_id": state.track_id,
+            "decision": state.decision,
+            "score": state.score,
+            "best_score": state.best_score,
+            "quality": state.quality,
+            "support": state.support,
+            "observations": state.observations,
+            "evidence": state.evidence,
+            "thumbnail": state.thumbnail,
+            "finalized": finalized,
+        }
 
     def run(self) -> None:
         capture_source: str | int = self.source
@@ -177,10 +250,13 @@ class VideoWorker(QThread):
         self.engine.reset_video()
         frame_index = 0
         last_result: FrameResult | None = None
-        reported_scores: dict[tuple[int, str], float] = {}
+        candidate_states: dict[int, _TargetTrackState] = {}
         started = time.perf_counter()
-        file_source = isinstance(capture_source, str) and not capture_source.lower().startswith(("rtsp://", "rtmp://"))
+        file_source = isinstance(capture_source, str) and not capture_source.lower().startswith(
+            ("rtsp://", "rtmp://")
+        )
         source_fps = capture.get(cv2.CAP_PROP_FPS) if file_source else 0.0
+        total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) if file_source else 0
         try:
             while self._running:
                 loop_started = time.perf_counter()
@@ -188,40 +264,95 @@ class VideoWorker(QThread):
                 if not ok:
                     break
                 frame_index += 1
+                emitted_candidate = False
                 if frame_index == 1 or frame_index % self.frame_interval == 0:
-                    last_result = self.engine.process_frame(frame, frame_index)
+                    position_msec = (
+                        float(capture.get(cv2.CAP_PROP_POS_MSEC))
+                        if file_source
+                        else (time.perf_counter() - started) * 1000.0
+                    )
+                    if position_msec <= 0.0 and source_fps > 0.0:
+                        position_msec = frame_index * 1000.0 / source_fps
+                    current_time = (
+                        format_video_time(position_msec, frame_index, source_fps)
+                        if file_source
+                        else datetime.now().strftime("%H:%M:%S")
+                    )
+                    last_result = self.engine.process_frame(
+                        frame,
+                        frame_index,
+                        timestamp=max(position_msec, 0.0) / 1000.0,
+                    )
+                    active_ids = {track.id for track in last_result.tracks}
                     for track in last_result.tracks:
-                        key = (track.id, track.person_id or "")
-                        previous_score = reported_scores.get(key)
-                        if (
-                            track.person_id
-                            and (previous_score is None or track.score > previous_score + 1e-6)
-                        ):
-                            reported_scores[key] = track.score
-                            self.recognized.emit(
-                                {
-                                    "time": datetime.now().strftime("%H:%M:%S"),
-                                    "track_id": track.id,
-                                    "person_id": track.person_id,
-                                    "name": track.name,
-                                    "id_card": track.id_card,
-                                    "score": track.score,
-                                    "quality": track.quality,
-                                    "new_track_match": previous_score is None,
-                                }
+                        if track.observations < 1:
+                            continue
+                        state = candidate_states.get(track.id)
+                        fresh = state is None
+                        if state is None:
+                            state = _TargetTrackState(
+                                track_id=track.id,
+                                start_time=current_time,
+                                end_time=current_time,
+                                best_time=current_time,
                             )
-                self.frame_ready.emit(self._qimage(frame, last_result))
+                            candidate_states[track.id] = state
+                        if track.last_frame == frame_index:
+                            state.end_time = current_time
+                        priority = {"low": 0, "review": 1, "confirmed": 2}
+                        upgraded = (
+                            priority.get(track.decision, 0)
+                            > priority.get(state.decision, 0)
+                        )
+                        score_improved = fresh or track.score > state.score + 1e-6
+                        best_frame_improved = (
+                            fresh or track.best_score > state.best_score + 1e-6
+                        )
+                        if score_improved:
+                            state.score = track.score
+                        if best_frame_improved:
+                            state.best_time = current_time
+                            state.thumbnail = self._face_thumbnail(frame, track.bbox)
+                        state.best_score = max(state.best_score, track.best_score)
+                        state.quality = max(state.quality, track.quality)
+                        state.support = max(state.support, track.support)
+                        state.observations = max(state.observations, track.observations)
+                        state.evidence = max(state.evidence, track.evidence)
+                        if upgraded:
+                            state.decision = track.decision
+                        if fresh or upgraded or score_improved or best_frame_improved:
+                            self.recognized.emit(self._candidate_event(state))
+                            emitted_candidate = True
+                    for track_id in set(candidate_states).difference(active_ids):
+                        state = candidate_states.pop(track_id)
+                        self.recognized.emit(self._candidate_event(state, finalized=True))
+                should_display = (
+                    not (file_source and self.fast_file_scan)
+                    or emitted_candidate
+                    or frame_index % max(5, self.frame_interval) == 0
+                )
+                if should_display:
+                    self.frame_ready.emit(self._qimage(frame, last_result))
                 if frame_index % 15 == 0:
                     elapsed = max(time.perf_counter() - started, 1e-6)
                     faces = last_result.detected_faces if last_result else 0
-                    self.stats.emit(f"GPU 推理中 · {frame_index / elapsed:.1f} FPS · 当前 {faces} 张人脸")
-                if file_source and source_fps > 1.0:
+                    progress = (
+                        f" · {frame_index * 100 / total_frames:.1f}%"
+                        if total_frames > 0
+                        else ""
+                    )
+                    self.stats.emit(
+                        f"GPU 检索中 · {frame_index / elapsed:.1f} FPS{progress} · 当前 {faces} 张人脸"
+                    )
+                if file_source and not self.fast_file_scan and source_fps > 1.0:
                     remaining = 1.0 / source_fps - (time.perf_counter() - loop_started)
                     if remaining > 0:
                         self.msleep(int(remaining * 1000))
         except Exception as exc:
             self.failed.emit(str(exc))
         finally:
+            for state in candidate_states.values():
+                self.recognized.emit(self._candidate_event(state, finalized=True))
             capture.release()
 
 
@@ -233,8 +364,9 @@ class MainWindow(QMainWindow):
         self.engine: FaceEngine | None = None
         self.enrollment: EnrollmentService | None = None
         self.worker: VideoWorker | None = None
-        self.video_matches = VideoMatchList()
-        self.setWindowTitle("Face Matching · GPU 视频人脸比对")
+        self.target_candidates = TargetCandidateList()
+        self.candidate_images: dict[int, QImage] = {}
+        self.setWindowTitle("Face Matching · 目标人物视频检索")
         self.resize(1420, 880)
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
@@ -254,7 +386,7 @@ class MainWindow(QMainWindow):
             except ModelMissingError:
                 if is_frozen_app():
                     raise ModelMissingError(
-                        "离线便携包缺少当前模型。请使用完整的 v2.4 离线包，"
+                        "离线便携包缺少当前模型。请使用完整的 v3.4 离线包，"
                         "或在联网构建机上重新打包；目标机不会尝试联网下载。"
                     )
                 profile = profile_spec(self.config.model_profile)
@@ -278,15 +410,6 @@ class MainWindow(QMainWindow):
             )
             self._set_video_enabled(True)
             self.refresh_people()
-            if self.database.list_stored_samples() and self.engine.matcher.person_count == 0:
-                QMessageBox.warning(
-                    self,
-                    "需要重建特征",
-                    "当前特征版本没有可用底库:\n"
-                    f"{self.engine.model_id}\n\n"
-                    "请在“人员库”点击“重建当前模型特征”。"
-                    "在重建前，视频不会产生人员命中。",
-                )
             return True
         except (FaceMatchingError, OSError, ValueError) as exc:
             QMessageBox.critical(self, "无法启动 GPU 推理", str(exc))
@@ -313,12 +436,24 @@ class MainWindow(QMainWindow):
 
     def _build_video_tab(self) -> None:
         tab = QWidget()
-        self.tabs.addTab(tab, "视频识别")
+        self.tabs.addTab(tab, "目标检索")
+        self.target_edit = QLineEdit()
+        self.target_edit.setPlaceholderText("选择一张只包含目标人物的人脸照片")
+        self.target_name_edit = QLineEdit("目标人物")
+        self.target_name_edit.setMaximumWidth(180)
+        target_browse = QPushButton("选择目标照片…")
+        target_browse.clicked.connect(self._browse_target)
+        target_row = QHBoxLayout()
+        target_row.addWidget(QLabel("目标照片："))
+        target_row.addWidget(self.target_edit, 1)
+        target_row.addWidget(target_browse)
+        target_row.addWidget(QLabel("标记名称："))
+        target_row.addWidget(self.target_name_edit)
         self.source_edit = QLineEdit()
         self.source_edit.setPlaceholderText("视频文件、RTSP/RTMP 地址，或摄像头编号（例如 0）")
         browse = QPushButton("选择视频…")
         camera = QPushButton("摄像头 0")
-        self.start_button = QPushButton("开始识别")
+        self.start_button = QPushButton("开始检索")
         self.stop_button = QPushButton("停止")
         browse.clicked.connect(self._browse_video)
         camera.clicked.connect(lambda: self.source_edit.setText("0"))
@@ -331,20 +466,44 @@ class MainWindow(QMainWindow):
         source_row.addWidget(camera)
         source_row.addWidget(self.start_button)
         source_row.addWidget(self.stop_button)
-        self.video_label = QLabel("选择视频、输入 RTSP 地址或使用摄像头 0")
+        self.fast_scan = QCheckBox("本地视频快速检索（不按原时长播放）")
+        self.fast_scan.setChecked(self.config.fast_file_scan)
+        self.summary_label = QLabel("尚未检索")
+        options_row = QHBoxLayout()
+        options_row.addWidget(self.fast_scan)
+        options_row.addStretch()
+        options_row.addWidget(self.summary_label)
+        self.video_label = QLabel("先选择目标照片和视频；绿色为自动确认，橙色为待复核候选")
         self.video_label.setAlignment(Qt.AlignCenter)
         self.video_label.setMinimumSize(880, 540)
         self.video_label.setStyleSheet("background:#111820;color:#8fa3b8;border-radius:8px;")
-        self.events = QTableWidget(0, 6)
-        self.events.setHorizontalHeaderLabels(["时间", "轨迹", "姓名", "身份证号", "相似度", "质量"])
+        self.events = QTableWidget(0, 9)
+        self.events.setHorizontalHeaderLabels(
+            [
+                "证据",
+                "最佳时刻",
+                "轨迹时间范围",
+                "判定",
+                "轨迹",
+                "综合分",
+                "最佳帧",
+                "支持/有效帧",
+                "质量",
+            ]
+        )
         self.events.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.events.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.events.setToolTip("每人保留整段视频中的最高分，按相似度从高到低排列")
+        self.events.verticalHeader().setDefaultSectionSize(82)
+        self.events.setToolTip(
+            "所有有效人脸轨迹都会参与排名；判定只作标签，列表严格按综合分倒序"
+        )
         body = QHBoxLayout()
         body.addWidget(self.video_label, 3)
         body.addWidget(self.events, 2)
         layout = QVBoxLayout(tab)
+        layout.addLayout(target_row)
         layout.addLayout(source_row)
+        layout.addLayout(options_row)
         layout.addLayout(body, 1)
         self._set_video_enabled(False)
 
@@ -411,6 +570,27 @@ class MainWindow(QMainWindow):
         self.match_margin.setRange(0.0, 0.3)
         self.match_margin.setSingleStep(0.01)
         self.match_margin.setValue(self.config.match_margin)
+        self.target_match_threshold = QDoubleSpinBox()
+        self.target_match_threshold.setRange(0.05, 0.95)
+        self.target_match_threshold.setSingleStep(0.01)
+        self.target_match_threshold.setValue(self.config.target_match_threshold)
+        self.target_review_threshold = QDoubleSpinBox()
+        self.target_review_threshold.setRange(0.05, 0.90)
+        self.target_review_threshold.setSingleStep(0.01)
+        self.target_review_threshold.setValue(self.config.target_review_threshold)
+        self.target_min_support = QSpinBox()
+        self.target_min_support.setRange(1, 20)
+        self.target_min_support.setValue(self.config.target_min_support)
+        self.target_min_evidence_gap = QDoubleSpinBox()
+        self.target_min_evidence_gap.setRange(0.0, 30.0)
+        self.target_min_evidence_gap.setSingleStep(0.25)
+        self.target_min_evidence_gap.setSuffix(" 秒")
+        self.target_min_evidence_gap.setValue(self.config.target_min_evidence_gap)
+        self.target_top_k = QSpinBox()
+        self.target_top_k.setRange(1, 500)
+        self.target_top_k.setValue(self.config.target_top_k)
+        self.target_auto_confirm = QCheckBox("启用（仅在完成现场正负样本标定后使用）")
+        self.target_auto_confirm.setChecked(self.config.target_auto_confirm)
         self.min_quality = QDoubleSpinBox()
         self.min_quality.setRange(0.0, 0.9)
         self.min_quality.setSingleStep(0.02)
@@ -439,8 +619,14 @@ class MainWindow(QMainWindow):
         form.addRow("GPU 后端：", self.backend_combo)
         form.addRow("GPU 编号：", self.gpu_device_id)
         form.addRow("检测置信度：", self.detector_threshold)
-        form.addRow("身份相似度阈值：", self.match_threshold)
-        form.addRow("第一/第二名最小差值：", self.match_margin)
+        form.addRow("目标自动确认阈值：", self.target_match_threshold)
+        form.addRow("目标候选复核阈值：", self.target_review_threshold)
+        form.addRow("自动确认最少支持帧：", self.target_min_support)
+        form.addRow("独立证据最小时间间隔：", self.target_min_evidence_gap)
+        form.addRow("结果显示 Top-K：", self.target_top_k)
+        form.addRow("允许自动确认：", self.target_auto_confirm)
+        form.addRow("人员库识别阈值：", self.match_threshold)
+        form.addRow("人员库第一/第二名差值：", self.match_margin)
         form.addRow("最低图像质量：", self.min_quality)
         form.addRow("检测输入尺寸：", self.detector_size)
         form.addRow("最小人脸边长：", self.min_face_size)
@@ -450,8 +636,8 @@ class MainWindow(QMainWindow):
         form.addRow("模型状态：", self.model_label)
         form.addRow("", save)
         note = QLabel(
-            "阈值必须用现场摄像头数据校准。高安全场景建议提高相似度阈值，并保留人工复核；"
-            "极端侧脸、严重模糊或人脸小于约 28 像素时，系统会宁可不认也不强猜。"
+            "所有有效轨迹都会进入候选池并严格按综合分倒序显示。阈值只决定标签，不会过滤结果；"
+            "相邻视频帧会按时间间隔去重。自动确认默认关闭，必须先使用现场正负样本标定。"
         )
         note.setWordWrap(True)
         layout = QVBoxLayout(tab)
@@ -466,8 +652,22 @@ class MainWindow(QMainWindow):
         if path:
             self.source_edit.setText(path)
 
+    def _browse_target(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择目标人物照片",
+            "",
+            "图片 (*.jpg *.jpeg *.png *.bmp *.webp);;所有文件 (*)",
+        )
+        if path:
+            self.target_edit.setText(path)
+
     def start_video(self) -> None:
         if not self.engine:
+            return
+        target_path = self.target_edit.text().strip()
+        if not target_path:
+            QMessageBox.warning(self, "缺少目标照片", "请先选择一张目标人物照片。")
             return
         source = self.source_edit.text().strip()
         if not source:
@@ -475,9 +675,36 @@ class MainWindow(QMainWindow):
             return
         if not self.stop_video():
             return
+        target_image = read_image(target_path)
+        if target_image is None:
+            QMessageBox.warning(self, "目标照片无效", "无法读取目标照片，请重新选择。")
+            return
+        progress = QProgressDialog("正在使用 GPU 建立目标模板…", None, 0, 0, self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.show()
+        QApplication.processEvents()
+        try:
+            target = self.engine.set_search_target(
+                target_image,
+                self.target_name_edit.text().strip() or "目标人物",
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "目标照片不可用", str(exc))
+            return
+        finally:
+            progress.close()
         self.events.setRowCount(0)
-        self.video_matches.clear()
-        self.worker = VideoWorker(self.engine, source, self.config.frame_interval)
+        self.target_candidates.clear()
+        self.candidate_images.clear()
+        self.summary_label.setText(
+            f"检索中 · 目标模板 {len(target.embeddings)} 个 · 照片质量 {target.quality.total:.2f}"
+        )
+        self.worker = VideoWorker(
+            self.engine,
+            source,
+            self.config.frame_interval,
+            fast_file_scan=self.fast_scan.isChecked(),
+        )
         self.worker.frame_ready.connect(self._show_frame)
         self.worker.recognized.connect(self._on_recognized)
         self.worker.stats.connect(self.statusBar().showMessage)
@@ -506,9 +733,23 @@ class MainWindow(QMainWindow):
     def _video_finished(self) -> None:
         self.start_button.setEnabled(bool(self.engine))
         self.stop_button.setEnabled(False)
-        self.statusBar().showMessage(
-            f"视频处理完成 · 匹配 {len(self.video_matches)} 人 · 已按 score 倒序排列"
-        )
+        confirmed = self.target_candidates.confirmed_count
+        review = self.target_candidates.review_count
+        low = self.target_candidates.low_count
+        total = len(self.target_candidates)
+        if confirmed:
+            summary = f"发现目标 · {confirmed} 条确认轨迹"
+            if review:
+                summary += f" · 另有 {review} 条待复核"
+        elif review:
+            summary = f"未自动确认 · {review} 条候选轨迹待人工复核 · 共 {total} 条轨迹"
+        elif low:
+            summary = f"未达到复核阈值 · 已按分数保留 {low} 条低置信度轨迹"
+        else:
+            summary = "视频中没有可用于比对的人脸轨迹"
+        self._refresh_target_results()
+        self.summary_label.setText(summary)
+        self.statusBar().showMessage(f"视频检索完成 · {summary}")
 
     def _show_frame(self, image: QImage) -> None:
         pixmap = QPixmap.fromImage(image)
@@ -517,26 +758,52 @@ class MainWindow(QMainWindow):
         )
 
     def _on_recognized(self, event: dict) -> None:
-        changed = self.video_matches.update(event)
+        changed = self.target_candidates.update(event)
+        thumbnail = event.get("thumbnail")
+        if isinstance(thumbnail, QImage):
+            self.candidate_images[int(event["track_id"])] = thumbnail
         if changed:
-            ranked = self.video_matches.ranked()
-            self.events.setRowCount(len(ranked))
-            for row, match in enumerate(ranked):
-                values = (
-                    match.time,
-                    f"#{match.track_id}",
-                    match.name,
-                    match.id_card,
-                    f"{match.score:.3f}",
-                    f"{match.quality:.3f}",
-                )
-                for column, value in enumerate(values):
-                    self.events.setItem(row, column, QTableWidgetItem(value))
-        if self.database and event.get("new_track_match", True):
-            self.database.log_event(
-                event["person_id"], self.source_edit.text().strip(), event["track_id"],
-                event["score"], event["quality"]
+            self._refresh_target_results()
+            confirmed = self.target_candidates.confirmed_count
+            review = self.target_candidates.review_count
+            self.summary_label.setText(
+                f"检索中 · 已确认 {confirmed} · 待复核 {review} · "
+                f"候选轨迹 {len(self.target_candidates)}"
             )
+
+    def _refresh_target_results(self) -> None:
+        ranked = self.target_candidates.ranked(self.config.target_top_k)
+        visible_ids = {candidate.track_id for candidate in ranked}
+        self.candidate_images = {
+            track_id: image
+            for track_id, image in self.candidate_images.items()
+            if track_id in visible_ids
+        }
+        self.events.setRowCount(len(ranked))
+        labels = {"confirmed": "自动确认", "review": "待复核", "low": "低置信度"}
+        for row, candidate in enumerate(ranked):
+            evidence = QLabel()
+            evidence.setAlignment(Qt.AlignCenter)
+            image = self.candidate_images.get(candidate.track_id)
+            if image is not None:
+                evidence.setPixmap(
+                    QPixmap.fromImage(image).scaled(
+                        92, 72, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                    )
+                )
+            self.events.setCellWidget(row, 0, evidence)
+            values = (
+                candidate.best_time,
+                f"{candidate.start_time} – {candidate.end_time}",
+                labels.get(candidate.decision, candidate.decision),
+                f"#{candidate.track_id}",
+                f"{candidate.score:.3f}",
+                f"{candidate.best_score:.3f}",
+                f"{candidate.support}/{candidate.evidence}",
+                f"{candidate.quality:.3f}",
+            )
+            for column, value in enumerate(values, 1):
+                self.events.setItem(row, column, QTableWidgetItem(value))
 
     def _selected_person(self) -> PersonRecord | None:
         row = self.people_table.currentRow()
@@ -688,11 +955,18 @@ class MainWindow(QMainWindow):
         self.config.detector_threshold = self.detector_threshold.value()
         self.config.match_threshold = self.match_threshold.value()
         self.config.match_margin = self.match_margin.value()
+        self.config.target_match_threshold = self.target_match_threshold.value()
+        self.config.target_review_threshold = self.target_review_threshold.value()
+        self.config.target_min_support = self.target_min_support.value()
+        self.config.target_min_evidence_gap = self.target_min_evidence_gap.value()
+        self.config.target_top_k = self.target_top_k.value()
+        self.config.target_auto_confirm = self.target_auto_confirm.isChecked()
         self.config.min_quality = self.min_quality.value()
         self.config.detector_size = self.detector_size.currentData()
         self.config.min_face_size = self.min_face_size.value()
         self.config.mirror_augmentation = new_mirror_augmentation
         self.config.frame_interval = self.frame_interval.value()
+        self.config.fast_file_scan = self.fast_scan.isChecked()
         try:
             self.config.save()
             if self.engine:
