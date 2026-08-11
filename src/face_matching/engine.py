@@ -11,7 +11,7 @@ from .errors import EnrollmentError
 from .gpu import create_gpu_session, resolve_gpu_backend
 from .matching import GalleryMatcher
 from .models import feature_model_id, profile_spec, required_paths
-from .vision.alignment import align_face
+from .vision.alignment import align_face, align_face_variants
 from .vision.detector import Detection, SCRFDDetector
 from .vision.quality import Quality, assess_quality
 from .vision.recognizer import FaceEmbedder
@@ -88,8 +88,8 @@ class FaceEngine:
         self.matcher.refresh()
         self.tracker.invalidate_identities()
 
-    def enrollment_feature(self, image: np.ndarray) -> EnrollmentFeature:
-        detections = self.detector.detect(image)
+    def _primary_enrollment_detection(self, image: np.ndarray) -> Detection:
+        detections = self.detector.detect_reference(image)
         if not detections:
             raise EnrollmentError("照片中没有检测到人脸")
         ranked = sorted(
@@ -109,6 +109,10 @@ class FaceEngine:
             raise EnrollmentError(
                 f"人脸过小（{min(detection.width, detection.height):.0f}px），请使用更清晰的照片"
             )
+        return detection
+
+    def enrollment_feature(self, image: np.ndarray) -> EnrollmentFeature:
+        detection = self._primary_enrollment_detection(image)
         aligned = align_face(image, detection.landmarks)
         quality = assess_quality(aligned, detection)
         if quality.total < self.config.enrollment_min_quality:
@@ -125,7 +129,7 @@ class FaceEngine:
         detections = self.detector.detect(frame)
         observations: list[Observation] = []
         aligned_faces: list[np.ndarray] = []
-        usable_observation_indexes: list[int] = []
+        embedding_groups: list[tuple[int, int, int]] = []
         for detection in detections:
             quality_score = 0.0
             if min(detection.width, detection.height) >= self.config.min_face_size:
@@ -134,8 +138,24 @@ class FaceEngine:
                     quality = assess_quality(aligned, detection)
                     quality_score = quality.total
                     if quality.total >= self.config.min_quality:
-                        usable_observation_indexes.append(len(observations))
-                        aligned_faces.append(aligned)
+                        uncertain_alignment = (
+                            quality.blur < 0.55
+                            or quality.pose < 0.80
+                            or detection.score < 0.75
+                        )
+                        if uncertain_alignment:
+                            variants = align_face_variants(
+                                frame,
+                                detection.landmarks,
+                                horizontal_offsets=(-4.0, 0.0, 4.0),
+                            )
+                            start = len(aligned_faces)
+                            aligned_faces.extend(variants)
+                            embedding_groups.append((len(observations), start + 1, 3))
+                        else:
+                            start = len(aligned_faces)
+                            aligned_faces.append(aligned)
+                            embedding_groups.append((len(observations), start, 1))
                 except (ValueError, FloatingPointError):
                     pass
             observations.append(
@@ -150,8 +170,14 @@ class FaceEngine:
             aligned_faces,
             mirror_augmentation=self.mirror_augmentation,
         )
-        for observation_index, embedding in zip(usable_observation_indexes, embeddings, strict=True):
-            observations[observation_index].embedding = embedding
+        for observation_index, primary_index, group_size in embedding_groups:
+            observations[observation_index].embedding = embeddings[primary_index]
+            group_start = primary_index - (group_size // 2)
+            observations[observation_index].alternate_embeddings = tuple(
+                embeddings[index]
+                for index in range(group_start, group_start + group_size)
+                if index != primary_index
+            )
         tracks = self.tracker.update(observations, frame_index)
         for track in tracks:
             if len(track.observations) < self.config.min_track_observations:
@@ -164,7 +190,7 @@ class FaceEngine:
             )
             if aggregate is not None:
                 track.apply_match(
-                    self.matcher.match(aggregate),
+                    self.matcher.match_track(aggregate, track.matching_observations),
                     consensus=self.config.confirmation_matches,
                 )
         views = tuple(
@@ -180,4 +206,4 @@ class FaceEngine:
             )
             for track in tracks
         )
-        return FrameResult(views, len(detections), len(embeddings))
+        return FrameResult(views, len(detections), len(embedding_groups))

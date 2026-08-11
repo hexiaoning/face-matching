@@ -49,6 +49,7 @@ class Observation:
     detection_score: float
     embedding: np.ndarray | None
     quality: float
+    alternate_embeddings: tuple[np.ndarray, ...] = ()
 
 
 @dataclass(slots=True)
@@ -59,6 +60,9 @@ class Track:
     misses: int = 0
     velocity: np.ndarray = field(default_factory=lambda: np.zeros(4, dtype=np.float32))
     observations: list[tuple[np.ndarray, float]] = field(default_factory=list)
+    matching_observations: list[tuple[tuple[np.ndarray, ...], float]] = field(
+        default_factory=list
+    )
     last_embedding: np.ndarray | None = None
     name: str = "采集中"
     person_id: str | None = None
@@ -82,10 +86,19 @@ class Track:
         if observation.embedding is not None:
             embedding = l2_normalize(observation.embedding)
             self.observations.append((embedding, float(observation.quality)))
+            variants = (embedding,) + tuple(
+                l2_normalize(item) for item in observation.alternate_embeddings
+            )
+            self.matching_observations.append((variants, float(observation.quality)))
             self.last_embedding = embedding
             self.embedding_version += 1
             if len(self.observations) > 32:
                 self.observations = sorted(self.observations, key=lambda item: item[1], reverse=True)[:24]
+                self.matching_observations = sorted(
+                    self.matching_observations,
+                    key=lambda item: item[1],
+                    reverse=True,
+                )[:24]
 
     def predict(self) -> np.ndarray:
         horizon = 1.0 + 0.25 * min(self.misses, 2)

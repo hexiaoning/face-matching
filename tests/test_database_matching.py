@@ -103,3 +103,46 @@ def test_internal_event_log_preserves_video_source_verbatim(tmp_path):
     with database._connect() as connection:
         stored = connection.execute("SELECT source FROM recognition_events").fetchone()["source"]
     assert stored == source
+
+
+def test_lvface_gallery_recalls_repeated_difficult_track_without_changing_gallery_flow(tmp_path):
+    model_id = "lvface-b-glint360k-v1-tta"
+    database = FaceDatabase(tmp_path / "faces.db")
+    alice = database.add_person(
+        "Alice", "A", [sample("a", unit(1.0, 0.0, 0.0), model=model_id)]
+    )
+    database.add_person(
+        "Bob", "B", [sample("b", unit(0.0, 1.0, 0.0), model=model_id)]
+    )
+    matcher = GalleryMatcher(database, model_id, threshold=0.45, min_margin=0.06)
+    difficult = unit(0.20, 0.0, np.sqrt(1.0 - 0.20**2))
+    observations = [((difficult,), quality) for quality in (0.5, 0.6, 0.7, 0.8)]
+
+    result = matcher.match_track(difficult, observations)
+
+    assert result.accepted is True
+    assert result.person_id == alice
+    assert result.name == "Alice"
+    assert result.score == pytest.approx(0.20)
+
+
+def test_lvface_difficult_track_requires_independent_frames_and_identity_margin(tmp_path):
+    model_id = "lvface-b-glint360k-v1-tta"
+    database = FaceDatabase(tmp_path / "faces.db")
+    database.add_person(
+        "Alice", "A", [sample("a", unit(1.0, 0.0, 0.0), model=model_id)]
+    )
+    database.add_person(
+        "Bob", "B", [sample("b", unit(0.0, 1.0, 0.0), model=model_id)]
+    )
+    matcher = GalleryMatcher(database, model_id, threshold=0.45, min_margin=0.06)
+    strong = unit(0.20, 0.0, np.sqrt(1.0 - 0.20**2))
+    one_frame = matcher.match_track(strong, [((strong, strong, strong), 0.8)])
+    ambiguous = unit(0.20, 0.18, np.sqrt(1.0 - 0.20**2 - 0.18**2))
+    repeated_ambiguous = matcher.match_track(
+        ambiguous,
+        [((ambiguous,), 0.8)] * 5,
+    )
+
+    assert one_frame.accepted is False
+    assert repeated_ambiguous.accepted is False
