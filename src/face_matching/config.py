@@ -36,6 +36,9 @@ class EngineConfig:
     max_track_age: int = 18
     max_track_embeddings: int = 24
     mirror_augmentation: bool = True
+    gpu_backend: str = field(default_factory=lambda: os.environ.get(
+        "FACE_MATCHING_BACKEND", "auto"
+    ).strip().lower())
     prefer_tensorrt: bool = field(default_factory=lambda: os.environ.get(
         "FACE_MATCHING_TENSORRT", "0"
     ).strip().lower() in {"1", "true", "yes"})

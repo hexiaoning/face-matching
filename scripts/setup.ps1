@@ -49,16 +49,16 @@ if ($LASTEXITCODE -ne 0) {
     throw "The virtual environment must use 64-bit Python 3.11-3.13."
 }
 
-Write-Host "Installing GPU runtime and desktop dependencies..."
+Write-Host "Installing NVIDIA CUDA, Intel OpenVINO GPU, and desktop dependencies..."
 Invoke-CheckedPython -m pip install --upgrade pip setuptools wheel
 Invoke-CheckedPython -m pip uninstall -y onnxruntime onnxruntime-directml
 Invoke-CheckedPython -m pip install --upgrade --force-reinstall "onnxruntime-gpu[cuda,cudnn]>=1.21,<1.27"
 Invoke-CheckedPython -m pip install -e ".[dev]"
-Invoke-CheckedPython -c "from face_matching.gpu import assert_gpu_available; print('GPU provider:', assert_gpu_available())"
+Invoke-CheckedPython -c "from face_matching.gpu import assert_gpu_available; print('GPU backend:', assert_gpu_available())"
 
 Write-Host "Downloading research model weights (about 750 MB)..."
 Write-Host "NOTICE: bundled download sources permit pretrained weights for non-commercial research only."
 Invoke-CheckedPython -m face_matching.model_manager
 
-Write-Host "Checking installation. A CUDA error here means the NVIDIA driver/runtime is unavailable."
+Write-Host "Checking installation. GPU errors mean the NVIDIA/Intel driver or runtime is unavailable."
 Invoke-CheckedPython -m face_matching.diagnostics

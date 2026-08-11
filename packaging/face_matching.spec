@@ -19,7 +19,7 @@ if missing:
 datas = [(str(model_root / name), "models") for name in model_names]
 binaries = []
 hiddenimports = []
-for package in ("onnxruntime", "cv2", "PySide6"):
+for package in ("onnxruntime", "openvino", "cv2", "PySide6"):
     package_datas, package_binaries, package_hidden = collect_all(package)
     datas += package_datas
     binaries += package_binaries

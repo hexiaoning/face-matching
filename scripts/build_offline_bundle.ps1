@@ -45,7 +45,7 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $VenvPython)) {
     throw "Failed to create the isolated build environment."
 }
 
-Write-Host "[1/5] Installing pinned-range release dependencies..." -ForegroundColor Cyan
+Write-Host "[1/5] Installing CUDA, OpenVINO GPU, and release dependencies..." -ForegroundColor Cyan
 Invoke-BuildPython -m pip install --upgrade pip setuptools wheel
 Invoke-BuildPython -m pip uninstall -y onnxruntime onnxruntime-directml
 Invoke-BuildPython -m pip install --upgrade --force-reinstall "onnxruntime-gpu[cuda,cudnn]>=1.21,<1.27"
@@ -94,7 +94,7 @@ Get-ChildItem -LiteralPath $ApplicationDirectory -Recurse -File |
 Write-Host "[5/5] Creating the offline ZIP..." -ForegroundColor Cyan
 $OutputResolved = [System.IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Path $OutputResolved -Force | Out-Null
-$ArchivePath = Join-Path $OutputResolved "FaceMatching-0.2.2-win64-cuda-offline.zip"
+$ArchivePath = Join-Path $OutputResolved "FaceMatching-0.2.2-win64-universal-gpu-offline.zip"
 if (Test-Path -LiteralPath $ArchivePath) {
     Remove-Item -LiteralPath $ArchivePath -Force
 }
@@ -106,4 +106,4 @@ if (-not $KeepBuild) {
     Remove-Item -LiteralPath $BuildRootResolved -Recurse -Force
 }
 Write-Host "Offline package: $ArchivePath" -ForegroundColor Green
-Write-Host "Target requires only Windows, a supported NVIDIA GPU, and its display driver." -ForegroundColor Green
+Write-Host "Target requires Windows and either an NVIDIA CUDA or Intel UHD/OpenVINO GPU driver." -ForegroundColor Green

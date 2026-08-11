@@ -23,7 +23,7 @@ def _source(value: str | None) -> str | int | None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="CUDA surveillance face matching desktop app")
+    parser = argparse.ArgumentParser(description="GPU surveillance face matching desktop app")
     parser.add_argument("--source", help="video path, camera index, or RTSP URL")
     parser.add_argument("--diagnose", action="store_true", help="run packaged GPU diagnostics")
     args = parser.parse_args(argv)

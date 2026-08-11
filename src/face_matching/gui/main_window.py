@@ -51,7 +51,7 @@ class MainWindow(QMainWindow):
         self.matcher = matcher
         self.source: str | int | None = initial_source
         self.worker: VideoWorker | None = None
-        self.setWindowTitle("监控视频人脸检索 · CUDA")
+        self.setWindowTitle("监控视频人脸检索 · GPU")
         self.resize(1480, 900)
 
         self.video_widget = VideoWidget()
@@ -314,7 +314,7 @@ class MainWindow(QMainWindow):
             "关于",
             "监控视频人脸检索 0.2.2\n\n"
             "SCRFD-10G + LVFace-B + 镜像 TTA + 鲁棒多帧聚合\n"
-            "推理强制使用 CUDA，不允许 CPU fallback。\n\n"
+            "RTX 5070 使用 CUDA，本机 Intel UHD 使用 OpenVINO GPU；不允许 CPU fallback。\n\n"
             "注意：默认下载的预训练权重仅限非商业研究；生产部署需替换为已获授权的 ONNX 权重。",
         )
 

@@ -65,8 +65,9 @@ class SCRFDDetector:
         threshold: float = 0.45,
         nms_threshold: float = 0.40,
         prefer_tensorrt: bool = False,
+        backend: str = "auto",
     ) -> None:
-        self.session = create_gpu_session(model_path, prefer_tensorrt)
+        self.session = create_gpu_session(model_path, prefer_tensorrt, backend)
         self.input_name = self.session.get_inputs()[0].name
         self.output_names = [output.name for output in self.session.get_outputs()]
         self.input_size = input_size

@@ -9,25 +9,38 @@ import onnxruntime as ort
 
 from .config import EngineConfig
 from .engine import FaceEngine
-from .gpu import available_gpu_providers
+from .gpu import available_gpu_backends, available_openvino_devices, resolve_gpu_backend
 from .model_manager import required_models
 
 
 def collect() -> dict[str, object]:
     config = EngineConfig()
     providers = ort.get_available_providers()
-    gpu = available_gpu_providers()
+    openvino_devices = available_openvino_devices()
+    backends = available_gpu_backends()
+    selected_backend = None
+    backend_error = None
+    try:
+        selected_backend = resolve_gpu_backend(config.gpu_backend)
+    except Exception as exc:
+        backend_error = str(exc)
     models = {str(path): path.is_file() for path in required_models(config)}
     result: dict[str, object] = {
         "python": sys.version.split()[0],
         "platform": platform.platform(),
         "onnxruntime": ort.__version__,
-        "providers": providers,
-        "gpu_ready": "CUDAExecutionProvider" in gpu,
+        "onnxruntime_providers": providers,
+        "openvino_devices": openvino_devices,
+        "available_gpu_backends": backends,
+        "requested_backend": config.gpu_backend,
+        "selected_backend": selected_backend,
+        "gpu_ready": selected_backend is not None,
         "models": models,
         "model_id": config.model_id,
         "inference_ready": False,
     }
+    if backend_error:
+        result["backend_error"] = backend_error
     if result["gpu_ready"] and all(models.values()):
         try:
             engine = FaceEngine(config)

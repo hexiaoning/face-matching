@@ -159,7 +159,7 @@ def _console_progress(name: str, current: int, total: int) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Download CUDA face matching model weights")
+    parser = argparse.ArgumentParser(description="Download GPU face matching model weights")
     parser.add_argument("--force", action="store_true", help="download files again")
     args = parser.parse_args(argv)
     print("Pretrained weights are provided for non-commercial research only.")

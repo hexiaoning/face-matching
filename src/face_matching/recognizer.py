@@ -13,8 +13,13 @@ def l2_normalize(values: np.ndarray, axis: int = -1) -> np.ndarray:
 
 
 class LVFaceRecognizer:
-    def __init__(self, model_path: str, prefer_tensorrt: bool = False) -> None:
-        self.session = create_gpu_session(model_path, prefer_tensorrt)
+    def __init__(
+        self,
+        model_path: str,
+        prefer_tensorrt: bool = False,
+        backend: str = "auto",
+    ) -> None:
+        self.session = create_gpu_session(model_path, prefer_tensorrt, backend)
         input_meta = self.session.get_inputs()[0]
         self.input_name = input_meta.name
         self.output_name = self.session.get_outputs()[0].name

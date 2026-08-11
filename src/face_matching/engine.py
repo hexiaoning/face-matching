@@ -8,6 +8,7 @@ from .alignment import align_face
 from .config import EngineConfig
 from .detector import FaceDetection, SCRFDDetector
 from .errors import GPUUnavailableError
+from .gpu import resolve_gpu_backend
 from .model_manager import assert_models_present
 from .quality import assess_quality
 from .recognizer import LVFaceRecognizer
@@ -17,15 +18,17 @@ class FaceEngine:
     def __init__(self, config: EngineConfig | None = None) -> None:
         self.config = config or EngineConfig()
         assert_models_present(self.config)
+        self.backend = resolve_gpu_backend(self.config.gpu_backend)
         self.detector = SCRFDDetector(
             str(self.config.detector_model),
             input_size=self.config.detector_size,
             threshold=self.config.detector_threshold,
             nms_threshold=self.config.nms_threshold,
             prefer_tensorrt=self.config.prefer_tensorrt,
+            backend=self.backend,
         )
         self.recognizer = LVFaceRecognizer(
-            str(self.config.recognizer_model), self.config.prefer_tensorrt
+            str(self.config.recognizer_model), self.config.prefer_tensorrt, self.backend
         )
         self._inference_lock = threading.RLock()
         self._warm_up_gpu()
@@ -64,7 +67,7 @@ class FaceEngine:
             return self.recognizer.embed_batch(aligned_faces, use_mirror)
 
     def _warm_up_gpu(self) -> None:
-        """Run both networks once so CUDA failures happen before the GUI opens."""
+        """Run both networks once so GPU failures happen before the GUI opens."""
         width, height = self.config.detector_size
         try:
             with self._inference_lock:
@@ -75,8 +78,9 @@ class FaceEngine:
                 )
         except Exception as exc:
             raise GPUUnavailableError(
-                "CUDA 推理自检失败，程序拒绝切换到 CPU。\n"
-                f"请检查 NVIDIA 驱动、CUDA/cuDNN 运行库和 ONNX 模型。\n原因: {exc}"
+                "GPU 推理自检失败，程序拒绝切换到 CPU。\n"
+                "请检查 NVIDIA/Intel 显卡驱动、GPU 运行库和 ONNX 模型。\n"
+                f"后端: {self.backend}\n原因: {exc}"
             ) from exc
 
 

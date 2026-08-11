@@ -4,7 +4,7 @@
 
 > **内部使用说明：**本系统部署在受控的内部环境，按业务要求不做脱敏处理。人员库、视频识别框和识别事件列表均显示完整身份证号；RTSP/HTTP 视频流地址以及相关错误信息也显示完整原值。
 
-本项目**强制使用 NVIDIA GPU**。CUDA Execution Provider 不存在、模型无法在 CUDA 上加载或首次 GPU 推理失败时，程序会明确报错退出，绝不静默降级到 CPU。
+本项目**强制使用 GPU**：RTX 5070 等 NVIDIA 显卡使用 ONNX Runtime CUDA，本机 Intel UHD 使用 OpenVINO GPU。`auto` 模式优先 CUDA，没有 CUDA 时选择 Intel GPU；两种后端加载或首次推理失败都会明确报错退出，绝不静默降级到 CPU。
 
 ## 技术方案
 
@@ -19,6 +19,7 @@
 - **鲁棒轨迹模板**：以轨迹内 medoid 为中心剔除身份不一致的离群帧，避免一次错轨或坏帧污染整个轨迹。
 - **开放集判定**：不仅要求最高余弦相似度超过阈值，还要求第一名和第二名之间有足够 margin，并用两次真实的新特征结果做时序确认。
 - **多参考照人员模板**：每个人的多个样本先在人员级别打分，清晰样本权重更高，减少单张照片的偶然性。
+- **双 GPU 后端**：同一套 SCRFD/LVFace ONNX 模型和预处理在 NVIDIA CUDA 与 Intel OpenVINO GPU 上运行；OpenVINO 固定使用 FP32，人员库按同一 `model_id` 复用，部署前仍需用临界样本做跨设备回归验证。
 
 相关官方资料：
 
@@ -27,6 +28,7 @@
 - [SCRFD 官方实现和 WIDER FACE 指标](https://github.com/deepinsight/insightface/tree/master/detection/scrfd)
 - [AdaFace 低质量人脸研究](https://github.com/mk-minchul/AdaFace)（方案比较参考）
 - [ONNX Runtime CUDA Execution Provider](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html)
+- [OpenVINO Intel GPU 支持](https://docs.openvino.ai/2026/openvino-workflow/running-inference/inference-devices-and-modes/gpu-device.html)
 
 没有加入生成式“人脸修复/超分辨率”：这类模型可以让画面看起来更清晰，但也可能生成原图不存在的身份细节。检索系统更安全的做法是拒绝极差帧，并聚合同一轨迹中的较好帧。
 
@@ -36,14 +38,12 @@
 
 | 项目 | 配置 |
 | --- | --- |
-| 设备 | 华硕 ROG G22CH 台式机 |
-| CPU | Intel i7-14700KF |
-| 显卡 | RTX 4070 SUPER 12GB |
-| 内存 | 64GB |
+| NVIDIA 设备 | RTX 5070（CUDA，效果和速度优先） |
+| 本机设备 | Intel UHD Graphics（OpenVINO GPU） |
 | 系统 | Windows 11 64 位 |
 | Python | 源码安装需 64 位 Python 3.11～3.13；离线发布包无需 Python |
 
-设备无需预装完整 CUDA Toolkit。源码安装通过 `onnxruntime-gpu[cuda,cudnn]` 安装 CUDA 12 / cuDNN 运行库；离线发布包已包含这些用户态 DLL。两种方式都仍需目标机安装支持该显卡的 NVIDIA 显示驱动，因为驱动提供的 `nvcuda.dll` 不能随应用分发。
+设备无需预装完整 CUDA Toolkit 或 OpenVINO Toolkit。源码安装会安装 CUDA/cuDNN 与 OpenVINO 运行库，离线发布包也包含两套用户态依赖。目标机仍需安装对应显示驱动：RTX 5070 使用最新 NVIDIA 驱动，本机 Intel UHD 使用当前 Intel 显卡驱动。
 
 ## 离线部署（交付目标机时使用）
 
@@ -53,19 +53,19 @@
 build_offline_bundle.bat
 ```
 
-脚本会在隔离环境中下载并校验依赖和约 750 MB 模型，使用 PyInstaller 生成 `release/FaceMatching-0.2.2-win64-cuda-offline.zip`，同时生成 ZIP 的 `.sha256`。发布包内包含：
+脚本会在隔离环境中下载并校验依赖和约 750 MB 模型，使用 PyInstaller 生成 `release/FaceMatching-0.2.2-win64-universal-gpu-offline.zip`，同时生成 ZIP 的 `.sha256`。发布包内包含：
 
 - Python 运行时、PySide6/Qt、OpenCV、NumPy；
-- ONNX Runtime GPU 与 pip 提供的 CUDA/cuDNN/CUBLAS 运行 DLL；
+- ONNX Runtime CUDA、OpenVINO Intel GPU，以及 CUDA/cuDNN/CUBLAS 运行 DLL；
 - SCRFD-10G 和 LVFace-B 两个经过 SHA-256 校验的 ONNX 模型；
 - GPU 自检、启动脚本、依赖清单和包内逐文件哈希清单。
 
-目标机不需要联网，不需要安装 Python、CUDA Toolkit 或 cuDNN。把整个 ZIP 解压到本地目录，先双击 `GPU Diagnostics.bat`，通过后再双击 `Start Face Matching.bat`。唯一的外部前提是 NVIDIA 显示驱动可用（`nvidia-smi` 能正常运行）。
+目标机不需要联网，也不需要安装 Python、CUDA Toolkit、cuDNN 或 OpenVINO Toolkit。把整个 ZIP 解压到本地目录，先双击 `GPU Diagnostics.bat`，通过后再双击 `Start Face Matching.bat`。RTX 5070 上应选择 `cuda`，本机 Intel UHD 上应选择 `openvino`。
 
 ## 源码安装与启动（开发机）
 
-1. 安装最新 NVIDIA 显卡驱动和 64 位 Python 3.11～3.13。
-2. 双击 `install.bat`。此流程**需要联网**，会创建 `.venv`、安装桌面与 CUDA 依赖、下载约 750 MB 模型，并执行两个模型的真实 GPU 推理自检。
+1. 安装对应的最新 NVIDIA 或 Intel 显卡驱动，以及 64 位 Python 3.11～3.13。
+2. 双击 `install.bat`。此流程**需要联网**，会创建 `.venv`、安装桌面、CUDA 和 OpenVINO 依赖，下载约 750 MB 模型，并执行两个模型的真实 GPU 推理自检。
 3. 双击 `start.bat`。
 
 安装失败时不会留下“看似成功”的状态。可在 PowerShell 中重新诊断：
@@ -74,7 +74,7 @@ build_offline_bundle.bat
 .\.venv\Scripts\python.exe -m face_matching.diagnostics
 ```
 
-诊断成功时 `gpu_ready` 和 `inference_ready` 都应为 `true`，`active_provider` 应为 `CUDAExecutionProvider`（显式启用 TensorRT 时也可能为 `TensorrtExecutionProvider`）。
+诊断成功时 `gpu_ready` 和 `inference_ready` 都应为 `true`。RTX 5070 的 `selected_backend` 应为 `cuda`，本机 Intel UHD 应为 `openvino`；`active_provider` 分别显示 `CUDAExecutionProvider` 或 `OpenVINO-GPU`。
 
 如果诊断明确提示模型损坏，可强制重新下载后再诊断：
 
@@ -114,6 +114,7 @@ build_offline_bundle.bat
 | `FACE_MATCHING_DETECTOR_MODEL` | 自有 SCRFD 兼容 ONNX 模型 |
 | `FACE_MATCHING_RECOGNIZER_MODEL` | 自有 LVFace 兼容 ONNX 模型 |
 | `FACE_MATCHING_MODEL_ID` | 特征版本；更换识别模型时必须同时修改 |
+| `FACE_MATCHING_BACKEND` | `auto`（默认）、`cuda` 或 `openvino`；均禁止 CPU 推理 |
 | `FACE_MATCHING_TENSORRT=1` | 已正确安装 TensorRT 时优先使用它，否则默认 CUDA |
 
 模型或特征预处理改变后旧特征不能混用，应使用新的 `FACE_MATCHING_MODEL_ID` 并重新录入照片。v0.2.2 默认 ID 是 `lvface-b-glint360k-v2-tta`，因为加入镜像 TTA，旧版人员库需要重新录入照片。
