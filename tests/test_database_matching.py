@@ -78,3 +78,15 @@ def test_corrupt_embedding_row_is_not_loaded(tmp_path):
             "UPDATE face_samples SET embedding_dim=999 WHERE person_id=?", (person_id,)
         )
     assert database.list_gallery("model-a") == []
+
+
+def test_internal_event_log_preserves_video_source_verbatim(tmp_path):
+    database = FaceDatabase(tmp_path / "faces.db")
+    person_id = database.add_person("Alice", "110101199001010000", [sample("a", unit(1, 0))])
+    source = "rtsp://admin:secret@192.0.2.1/live"
+
+    database.log_event(person_id, source, track_id=7, score=0.81, quality=0.76)
+
+    with database._connect() as connection:
+        stored = connection.execute("SELECT source FROM recognition_events").fetchone()["source"]
+    assert stored == source

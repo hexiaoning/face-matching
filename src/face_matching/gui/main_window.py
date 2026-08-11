@@ -42,7 +42,6 @@ from ..errors import FaceMatchingError, ModelMissingError
 from ..gpu import assert_cuda_available
 from ..models import PROFILES, available_profiles, download_profile, profile_spec, required_paths
 from ..paths import is_frozen_app
-from ..privacy import mask_id_card, redact_source_credentials
 from ..vision.io import read_image
 
 
@@ -486,7 +485,7 @@ class MainWindow(QMainWindow):
             event["time"],
             f'#{event["track_id"]}',
             event["name"],
-            mask_id_card(event["id_card"]),
+            event["id_card"],
             f'{event["score"]:.3f}',
             f'{event["quality"]:.3f}',
         )
@@ -494,7 +493,7 @@ class MainWindow(QMainWindow):
             self.events.setItem(row, column, QTableWidgetItem(value))
         if self.database:
             self.database.log_event(
-                event["person_id"], redact_source_credentials(self.source_edit.text().strip()), event["track_id"],
+                event["person_id"], self.source_edit.text().strip(), event["track_id"],
                 event["score"], event["quality"]
             )
 
@@ -622,7 +621,7 @@ class MainWindow(QMainWindow):
         for row, person in enumerate(people):
             values = (
                 person.name,
-                mask_id_card(person.id_card),
+                person.id_card,
                 str(person.photo_count),
                 person.updated_at.replace("T", " ")[:19],
                 person.id[:10],
