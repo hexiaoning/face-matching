@@ -29,7 +29,6 @@ from ..database import FaceDatabase
 from ..engine import FaceEngine
 from ..matcher import GalleryMatcher
 from ..pipeline import FrameResult, RecognitionEvent
-from ..privacy import redact_source_credentials
 from ..video_worker import VideoWorker
 from .person_page import PersonPage
 from .video_widget import VideoWidget
@@ -204,8 +203,7 @@ class MainWindow(QMainWindow):
         elif isinstance(self.source, int):
             text = f"摄像头 {self.source}"
         elif self.source.lower().startswith(("rtsp://", "http://", "https://", "rtmp://")):
-            safe_source = redact_source_credentials(self.source)
-            text = safe_source[:70] + ("…" if len(safe_source) > 70 else "")
+            text = self.source[:70] + ("…" if len(self.source) > 70 else "")
         else:
             text = Path(self.source).name
             self.source_label.setToolTip(self.source)
@@ -276,7 +274,7 @@ class MainWindow(QMainWindow):
         values = (
             event.time.strftime("%H:%M:%S"),
             event.name,
-            event.masked_id_card,
+            event.id_card,
             f"{event.score:.3f}",
             f"#{event.track_id}",
         )

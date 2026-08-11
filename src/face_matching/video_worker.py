@@ -10,7 +10,6 @@ from PySide6.QtGui import QImage
 from .engine import FaceEngine
 from .matcher import GalleryMatcher
 from .pipeline import VideoFacePipeline
-from .privacy import redact_source_credentials
 
 
 class VideoWorker(QThread):
@@ -140,4 +139,4 @@ class VideoWorker(QThread):
     def _source_description(self) -> str:
         if isinstance(self.source, int):
             return f"摄像头 {self.source}"
-        return redact_source_credentials(self.source)
+        return self.source

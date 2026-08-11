@@ -64,7 +64,7 @@ def test_matcher_uses_person_level_multi_photo_score_and_margin(tmp_path) -> Non
     assert accepted.accepted
     assert accepted.person_id == alice_id
     assert accepted.name == "Alice"
-    assert accepted.masked_id_card == "***"
+    assert accepted.id_card == "A-1"
 
     ambiguous = matcher.match(np.array([1.0, 1.0]), threshold=0.5, min_margin=0.2)
     assert not ambiguous.accepted

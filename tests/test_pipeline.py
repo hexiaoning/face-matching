@@ -66,6 +66,7 @@ def test_pipeline_requires_two_fresh_embedding_decisions() -> None:
     assert fourth.faces[0].accepted
     assert len(fourth.events) == 1
     assert fourth.events[0].name == "张三"
+    assert fourth.events[0].id_card == "110101199001011234"
 
 
 def test_gallery_revision_invalidates_stable_identity() -> None:

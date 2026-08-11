@@ -16,7 +16,7 @@ class VisualFace:
     bbox: tuple[float, float, float, float]
     track_id: int
     name: str
-    masked_id_card: str
+    id_card: str
     score: float
     quality: float
     state: str
@@ -28,7 +28,7 @@ class RecognitionEvent:
     time: datetime
     track_id: int
     name: str
-    masked_id_card: str
+    id_card: str
     score: float
 
 
@@ -111,7 +111,7 @@ class VideoFacePipeline:
         for track, detection in assignments:
             quality = float(detection.quality.overall) if detection.quality else 0.0
             name = "未知"
-            masked_id = ""
+            id_card = ""
             score = 0.0
             accepted = False
             state = "采集中"
@@ -120,7 +120,7 @@ class VideoFacePipeline:
             if track.stable_match is not None:
                 stable = track.stable_match
                 name = stable.name
-                masked_id = stable.masked_id_card
+                id_card = stable.id_card
                 score = stable.score
                 accepted = True
                 state = "已确认"
@@ -131,7 +131,7 @@ class VideoFacePipeline:
                 bbox=tuple(float(value) for value in detection.bbox),
                 track_id=track.id,
                 name=name,
-                masked_id_card=masked_id,
+                id_card=id_card,
                 score=score,
                 quality=quality,
                 state=state,
@@ -145,6 +145,6 @@ def _event(track_id: int, match: MatchResult) -> RecognitionEvent:
         time=datetime.now(),
         track_id=track_id,
         name=match.name,
-        masked_id_card=match.masked_id_card,
+        id_card=match.id_card,
         score=match.score,
     )

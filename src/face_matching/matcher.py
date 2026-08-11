@@ -6,7 +6,6 @@ from dataclasses import dataclass
 import numpy as np
 
 from .database import FaceDatabase, GallerySample
-from .privacy import mask_id_card
 from .recognizer import l2_normalize
 
 
@@ -18,11 +17,6 @@ class MatchResult:
     score: float
     margin: float
     accepted: bool
-
-    @property
-    def masked_id_card(self) -> str:
-        return mask_id_card(self.id_card)
-
 
 class GalleryMatcher:
     def __init__(self, database: FaceDatabase, model_id: str) -> None:

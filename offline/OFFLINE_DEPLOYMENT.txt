@@ -20,8 +20,7 @@ People, copied photos, and the SQLite database are stored under:
   %LOCALAPPDATA%\FaceMatching
 
 Privacy and licensing:
-- ID numbers are masked in recognition results. The people-management screen is an
-  administrative view and displays the full value.
+- This internal-use build displays full ID numbers and full video-source addresses.
 - Database and photos are not encrypted. Protect the Windows account and disk.
 - The bundled default pretrained weights are for non-commercial research only.
   Commercial deployment requires appropriately licensed replacement ONNX models.
