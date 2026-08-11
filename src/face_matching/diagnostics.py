@@ -9,7 +9,7 @@ import onnxruntime as ort
 
 from .config import EngineConfig
 from .engine import FaceEngine
-from .gpu import available_gpu_providers
+from .gpu import assert_gpu_available, available_gpu_providers
 from .model_manager import required_models
 
 
@@ -18,16 +18,28 @@ def collect() -> dict[str, object]:
     providers = ort.get_available_providers()
     gpu = available_gpu_providers()
     models = {str(path): path.is_file() for path in required_models(config)}
+    try:
+        selected_provider = assert_gpu_available(
+            config.gpu_backend, config.prefer_tensorrt
+        )
+    except Exception as exc:
+        selected_provider = None
+        gpu_error = str(exc)
     result: dict[str, object] = {
         "python": sys.version.split()[0],
         "platform": platform.platform(),
         "onnxruntime": ort.__version__,
         "providers": providers,
-        "gpu_ready": "CUDAExecutionProvider" in gpu,
+        "requested_backend": config.gpu_backend,
+        "available_gpu_providers": gpu,
+        "selected_provider": selected_provider,
+        "gpu_ready": selected_provider is not None,
         "models": models,
         "model_id": config.model_id,
         "inference_ready": False,
     }
+    if selected_provider is None:
+        result["gpu_error"] = gpu_error
     if result["gpu_ready"] and all(models.values()):
         try:
             engine = FaceEngine(config)

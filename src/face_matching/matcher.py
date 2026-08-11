@@ -18,14 +18,6 @@ class MatchResult:
     margin: float
     accepted: bool
 
-    @property
-    def masked_id_card(self) -> str:
-        if not self.id_card:
-            return ""
-        if len(self.id_card) <= 7:
-            return self.id_card[:2] + "***"
-        return f"{self.id_card[:3]}********{self.id_card[-4:]}"
-
 
 class GalleryMatcher:
     def __init__(self, database: FaceDatabase, model_id: str) -> None:

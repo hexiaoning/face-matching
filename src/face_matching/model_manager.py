@@ -78,7 +78,7 @@ def _sha256(path: Path) -> str:
 
 
 def _download(spec: DownloadSpec, temp_path: Path, progress: Progress) -> None:
-    request = urllib.request.Request(spec.url, headers={"User-Agent": "FaceMatching/0.2.1"})
+    request = urllib.request.Request(spec.url, headers={"User-Agent": "FaceMatching/0.2.2"})
     with urllib.request.urlopen(request, timeout=90) as response, temp_path.open("wb") as output:
         total = int(response.headers.get("Content-Length") or spec.size)
         downloaded = 0
@@ -147,7 +147,7 @@ def _console_progress(name: str, current: int, total: int) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Download CUDA face matching model weights")
+    parser = argparse.ArgumentParser(description="Download GPU face matching model weights")
     parser.add_argument("--force", action="store_true", help="download files again")
     args = parser.parse_args(argv)
     print("Pretrained weights are provided for non-commercial research only.")

@@ -81,10 +81,15 @@ def test_recognizer_batches_mirror_augmentation(monkeypatch: pytest.MonkeyPatch)
 def test_frozen_bundle_prefers_embedded_models(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     bundled_models = tmp_path / "models"
     bundled_models.mkdir()
+    (tmp_path / "backend.txt").write_text("directml", encoding="ascii")
     monkeypatch.delenv("FACE_MATCHING_MODEL_DIR", raising=False)
+    monkeypatch.delenv("FACE_MATCHING_GPU_BACKEND", raising=False)
     monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
 
     assert model_dir() == bundled_models
+    frozen_config = EngineConfig()
+    assert frozen_config.gpu_backend == "directml"
+    assert frozen_config.detector_size == (640, 640)
 
 
 def test_accuracy_profile_defaults_and_tta_feature_version(
@@ -93,6 +98,7 @@ def test_accuracy_profile_defaults_and_tta_feature_version(
     monkeypatch.delenv("FACE_MATCHING_DETECTOR_SIZE", raising=False)
     monkeypatch.delenv("FACE_MATCHING_MODEL_ID", raising=False)
     monkeypatch.delenv("FACE_MATCHING_MIRROR_TTA", raising=False)
+    monkeypatch.delenv("FACE_MATCHING_GPU_BACKEND", raising=False)
     config = EngineConfig()
     assert config.detector_size == (960, 960)
     assert config.mirror_augmentation
@@ -102,3 +108,9 @@ def test_accuracy_profile_defaults_and_tta_feature_version(
     speed_config = EngineConfig()
     assert not speed_config.mirror_augmentation
     assert "single" in speed_config.model_id
+
+    monkeypatch.setenv("FACE_MATCHING_GPU_BACKEND", "directml")
+    monkeypatch.delenv("FACE_MATCHING_DETECTOR_SIZE", raising=False)
+    intel_config = EngineConfig()
+    assert intel_config.gpu_backend == "directml"
+    assert intel_config.detector_size == (640, 640)

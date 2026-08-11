@@ -3,7 +3,7 @@ class FaceMatchingError(RuntimeError):
 
 
 class GPUUnavailableError(FaceMatchingError):
-    """Raised when CUDA inference cannot be guaranteed."""
+    """Raised when GPU-only inference cannot be guaranteed."""
 
 
 class ModelMissingError(FaceMatchingError):

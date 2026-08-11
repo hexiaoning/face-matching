@@ -57,7 +57,7 @@ class VideoWidget(QWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRoundedRect(rect, 4, 4)
             if face.accepted:
-                label = f"{face.name}  {face.score:.3f}  {face.masked_id_card}"
+                label = f"{face.name}  {face.score:.3f}  {face.id_card}"
             else:
                 label = f"{face.state}  Q:{face.quality:.2f}  #{face.track_id}"
             metrics = painter.fontMetrics()

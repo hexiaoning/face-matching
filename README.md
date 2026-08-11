@@ -1,8 +1,10 @@
 # Face Matching
 
-面向监控视频的本地人脸检索桌面程序。人员库保存“姓名 + 身份证号 + 1～多张照片”，支持鼠标选择本地视频、USB 摄像头或 RTSP/HTTP 视频流，并在画面中显示轨迹、识别结果、遮罩身份证号和相似度。
+面向监控视频的本地人脸检索桌面程序。人员库保存“姓名 + 身份证号 + 1～多张照片”，支持鼠标选择本地视频、USB 摄像头或 RTSP/HTTP 视频流，并在画面中显示轨迹、识别结果、完整身份证号和相似度。
 
-本项目**强制使用 NVIDIA GPU**。CUDA Execution Provider 不存在、模型无法在 CUDA 上加载或首次 GPU 推理失败时，程序会明确报错退出，绝不静默降级到 CPU。
+这是内部系统，按需求不提供身份证号或视频画面脱敏功能。人员库、实时画面、命中列表和管理操作均显示完整原始信息。
+
+本项目**强制使用 GPU**，提供两套互斥运行环境：RTX 5070 使用 CUDA Execution Provider，本机 Intel 核显使用 DirectML Execution Provider。请求的 GPU provider 不存在、模型无法在 GPU 上加载或首次推理失败时，程序会明确报错退出，绝不静默降级到 CPU。
 
 ## 技术方案
 
@@ -24,44 +26,55 @@
 - [SCRFD 官方实现和 WIDER FACE 指标](https://github.com/deepinsight/insightface/tree/master/detection/scrfd)
 - [AdaFace 低质量人脸研究](https://github.com/mk-minchul/AdaFace)（方案比较参考）
 - [ONNX Runtime CUDA Execution Provider](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html)
+- [ONNX Runtime DirectML Execution Provider](https://onnxruntime.ai/docs/execution-providers/DirectML-ExecutionProvider.html)
 
 没有加入生成式“人脸修复/超分辨率”：这类模型可以让画面看起来更清晰，但也可能生成原图不存在的身份细节。检索系统更安全的做法是拒绝极差帧，并聚合同一轨迹中的较好帧。
 
 ## 支持环境
 
-目标设备：
+支持两种 Windows 11 运行配置：
 
-| 项目 | 配置 |
-| --- | --- |
-| 设备 | 华硕 ROG G22CH 台式机 |
-| CPU | Intel i7-14700KF |
-| 显卡 | RTX 4070 SUPER 12GB |
-| 内存 | 64GB |
-| 系统 | Windows 11 64 位 |
-| 目标机软件 | NVIDIA 驱动；无需 Python、CUDA Toolkit 或网络 |
+| 场景 | GPU 后端 | 前置条件 | 用途 |
+| --- | --- | --- | --- |
+| 本机 Intel 核显 | DirectML | 最新 Intel 显卡驱动、DirectX 12 | 开发、演示和功能验证 |
+| 目标机 RTX 5070 | CUDA 12.8 / cuDNN 9 | 最新 NVIDIA 驱动 | 正式高速识别 |
 
-离线包已经包含 Python 运行时、ONNX Runtime GPU、CUDA 12 / cuDNN 9 DLL、OpenCV、PySide6 和模型。由于 NVIDIA 驱动需要匹配硬件和系统内核，它是目标机唯一需要预先安装的运行依赖。
+两套 Python 环境和离线包不能混装：`onnxruntime-directml` 与 `onnxruntime-gpu` 提供同名模块，会互相覆盖。业务代码、数据库结构和模型相同，仅 GPU 执行 provider 与随包 DLL 不同。RTX 5070 包固定使用 ONNX Runtime 1.26.x 的 CUDA 12.8 构建，避免 1.27 及以后默认 CUDA 13 带来的驱动要求变化。
 
 ## 离线打包与目标机部署
 
-联网的 Windows 11 **构建机**需要 NVIDIA GPU/驱动和 64 位 Python 3.11～3.13：
+### 本机 Intel 核显
 
-1. 双击 `build_offline_bundle.bat`。
-2. 脚本创建构建环境、安装固定大版本范围内的依赖、下载并校验约 750 MB 模型，然后用 PyInstaller 生成单目录应用。
-3. 脚本把 pip 安装的 CUDA/cuDNN DLL 收集到包内，并从冻结后的程序真实运行检测器和识别器；任一模型没有在 GPU 上成功推理都会中止打包。
-4. 产物为 `offline_dist\FaceMatching\` 和 `offline_dist\FaceMatching-offline-win64.zip`。
+联网使用源码时，双击 `install_intel.bat` 安装独立的 `.venv-directml`，以后双击 `start_intel.bat`。要制作 Intel 离线包，双击 `build_offline_intel_bundle.bat`，产物位于：
 
-把完整 `FaceMatching` 文件夹复制到**无网络目标机**，先双击 `GPU诊断.bat`，成功后双击 `启动.bat`。不要只复制 EXE。目标机不执行 pip、不下载模型，也不需要安装 Python 或 CUDA Toolkit。
+- `offline_dist\directml\FaceMatching\`
+- `offline_dist\FaceMatching-directml-offline-win64.zip`
 
-`install.bat` / `start.bat` 保留给源码开发和联网调试使用，不是离线交付流程。可向打包脚本传入 `-SkipModelDownload` 复用构建机上已校验的模型；`-SkipGpuSelfTest` 只用于无 GPU 的 CI，正式交付不得使用。
+DirectML 官方要求关闭内存模式优化并使用顺序执行，本项目已按此创建会话。Intel 核显性能会明显低于 RTX 5070，但推理仍在 GPU 上执行。
+
+### 无网络 RTX 5070 目标机
+
+如果有联网 NVIDIA 构建机，双击 `build_offline_bundle.bat`，脚本会在冻结后真实运行两个模型的 CUDA 自检。
+
+如果只有当前 Intel 核显机器可联网，双击 `build_offline_cuda_on_intel.bat`：它会下载并打包 Python、ONNX Runtime GPU、CUDA 12.8、cuDNN 9、OpenCV、PySide6 和两个模型，但因本机没有 NVIDIA GPU，会把真实 CUDA 自检延后到目标机。产物位于：
+
+- `offline_dist\cuda\FaceMatching\`
+- `offline_dist\FaceMatching-cuda-offline-win64.zip`
+
+把整个 `FaceMatching` 文件夹复制到无网络 RTX 5070 机器，先双击 `GPU诊断.bat`。只有 `selected_provider` 为 `CUDAExecutionProvider`（或显式启用的 TensorRT）、`gpu_ready` 和 `inference_ready` 都为 `true` 时，才双击 `启动.bat`。目标机不执行 pip、不下载模型，也不需要安装 Python 或 CUDA Toolkit。
+
+两种离线包都包含依赖版本和 SHA-256 清单。可向打包脚本传入 `-SkipModelDownload` 复用已校验模型；除上述 Intel→RTX 跨机器打包外，不应跳过 GPU 自检。
+
+需要把人员库从 Intel 本机迁移到 RTX 目标机时，先关闭两端程序，再复制整个 `%LOCALAPPDATA%\FaceMatching` 目录；数据库、照片和特征可以直接共用。
 
 源码环境安装失败时不会留下“看似成功”的状态。可在 PowerShell 中重新诊断：
 
 ```powershell
 .\.venv\Scripts\python.exe -m face_matching.diagnostics
+# Intel 环境：.\.venv-directml\Scripts\python.exe -m face_matching.diagnostics
 ```
 
-诊断成功时 `gpu_ready` 和 `inference_ready` 都应为 `true`，`active_provider` 应为 `CUDAExecutionProvider`（显式启用 TensorRT 时也可能为 `TensorrtExecutionProvider`）。
+诊断成功时 `gpu_ready` 和 `inference_ready` 都应为 `true`。Intel 环境的 `active_provider` 应为 `DmlExecutionProvider`，RTX 5070 应为 `CUDAExecutionProvider`（显式启用 TensorRT 时也可能为 `TensorrtExecutionProvider`）。
 
 如果诊断明确提示模型损坏，可强制重新下载后再诊断：
 
@@ -100,7 +113,8 @@
 | `FACE_MATCHING_DETECTOR_MODEL` | 自有 SCRFD 兼容 ONNX 模型 |
 | `FACE_MATCHING_RECOGNIZER_MODEL` | 自有 LVFace 兼容 ONNX 模型 |
 | `FACE_MATCHING_MODEL_ID` | 特征版本；更换识别模型时必须同时修改 |
-| `FACE_MATCHING_GPU` | NVIDIA GPU 编号，默认 `0` |
+| `FACE_MATCHING_GPU_BACKEND` | `cuda` / `directml` / `auto`；启动脚本和离线包会自动设置 |
+| `FACE_MATCHING_GPU` | GPU/显示适配器编号，默认 `0` |
 | `FACE_MATCHING_DETECTOR_SIZE` | 动态检测模型输入边长：`640` / `960` / `1280`，默认效果优先的 `960` |
 | `FACE_MATCHING_MIRROR_TTA=0` | 关闭镜像测试增强以换取更快的识别速度；特征版本会改变，需重新录入 |
 | `FACE_MATCHING_TENSORRT=1` | 已正确安装 TensorRT 时优先使用它，否则默认 CUDA |
@@ -121,7 +135,8 @@
 ## 开发验证
 
 ```powershell
-python -m pip install -e ".[dev]"
+python -m pip install -e ".[dev,directml]"  # Intel 核显
+# 或：python -m pip install -e ".[dev,cuda]"  # NVIDIA
 python -m pytest
 python -m compileall -q src tests
 ```

@@ -24,11 +24,13 @@ class FaceEngine:
             nms_threshold=self.config.nms_threshold,
             prefer_tensorrt=self.config.prefer_tensorrt,
             device_id=self.config.gpu_device_id,
+            gpu_backend=self.config.gpu_backend,
         )
         self.recognizer = LVFaceRecognizer(
             str(self.config.recognizer_model),
             self.config.prefer_tensorrt,
             self.config.gpu_device_id,
+            self.config.gpu_backend,
         )
         self._inference_lock = threading.RLock()
         self._warm_up_gpu()
@@ -61,7 +63,7 @@ class FaceEngine:
             )
 
     def _warm_up_gpu(self) -> None:
-        """Run both networks once so CUDA failures happen before the GUI opens."""
+        """Run both networks once so GPU failures happen before the GUI opens."""
         width, height = self.config.detector_size
         try:
             with self._inference_lock:
@@ -72,8 +74,8 @@ class FaceEngine:
                 )
         except Exception as exc:
             raise GPUUnavailableError(
-                "CUDA 推理自检失败，程序拒绝切换到 CPU。\n"
-                f"请检查 NVIDIA 驱动、CUDA/cuDNN 运行库和 ONNX 模型。\n原因: {exc}"
+                "GPU 推理自检失败，程序拒绝切换到 CPU。\n"
+                f"请检查显卡驱动、GPU 运行库和 ONNX 模型。\n原因: {exc}"
             ) from exc
 
 

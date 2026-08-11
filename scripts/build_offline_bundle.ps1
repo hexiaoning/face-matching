@@ -1,5 +1,7 @@
 [CmdletBinding()]
 param(
+    [ValidateSet("cuda", "directml")]
+    [string]$Backend = "cuda",
     [string]$OutputDirectory = "",
     [switch]$SkipModelDownload,
     [switch]$SkipGpuSelfTest
@@ -7,18 +9,22 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
-$VenvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+$VenvName = if ($Backend -eq "cuda") { ".venv" } else { ".venv-directml" }
+$VenvPython = Join-Path $ProjectRoot "$VenvName\Scripts\python.exe"
+$InstallMarker = Join-Path $ProjectRoot "$VenvName\.face-matching-$Backend-ready"
 $SetupScript = Join-Path $PSScriptRoot "setup.ps1"
+$env:FACE_MATCHING_GPU_BACKEND = $Backend
 
 if (-not $OutputDirectory) {
     $OutputDirectory = Join-Path $ProjectRoot "offline_dist"
 }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
-$BundleDirectory = Join-Path $OutputDirectory "FaceMatching"
-$ArchivePath = Join-Path $OutputDirectory "FaceMatching-offline-win64.zip"
-$BuildRoot = Join-Path $ProjectRoot "build\offline-pyinstaller"
-$SpecRoot = Join-Path $ProjectRoot "build\offline-spec"
-$ModelStage = Join-Path $ProjectRoot "build\offline-models"
+$BackendOutputDirectory = Join-Path $OutputDirectory $Backend
+$BundleDirectory = Join-Path $BackendOutputDirectory "FaceMatching"
+$ArchivePath = Join-Path $OutputDirectory "FaceMatching-$Backend-offline-win64.zip"
+$BuildRoot = Join-Path $ProjectRoot "build\offline-pyinstaller-$Backend"
+$SpecRoot = Join-Path $ProjectRoot "build\offline-spec-$Backend"
+$ModelStage = Join-Path $ProjectRoot "build\offline-models-$Backend"
 
 function Invoke-CheckedPython {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
@@ -29,16 +35,20 @@ function Invoke-CheckedPython {
 }
 
 Set-Location $ProjectRoot
-if (-not (Test-Path -LiteralPath $VenvPython)) {
+if (-not (Test-Path -LiteralPath $VenvPython) -or -not (Test-Path -LiteralPath $InstallMarker)) {
     Write-Host "Preparing the GPU build environment..." -ForegroundColor Cyan
-    & $SetupScript
+    if ($SkipGpuSelfTest) {
+        & $SetupScript -Backend $Backend -SkipGpuCheck
+    } else {
+        & $SetupScript -Backend $Backend
+    }
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $VenvPython)) {
         throw "The build environment could not be created."
     }
 }
 
 Write-Host "Installing the reproducible bundle builder..." -ForegroundColor Cyan
-Invoke-CheckedPython -m pip install -e ".[build]"
+Invoke-CheckedPython -Arguments @("-m", "pip", "install", "-e", ".[build,$Backend]")
 if (-not $SkipModelDownload) {
     Write-Host "Downloading/verifying both model files on the BUILD machine..." -ForegroundColor Cyan
     Invoke-CheckedPython -m face_matching.model_manager
@@ -55,7 +65,8 @@ foreach ($ModelPath in $ModelPaths) {
     }
 }
 
-New-Item -ItemType Directory -Force -Path $OutputDirectory, $BuildRoot, $SpecRoot | Out-Null
+New-Item -ItemType Directory -Force -Path `
+    $OutputDirectory, $BackendOutputDirectory, $BuildRoot, $SpecRoot | Out-Null
 if (Test-Path -LiteralPath $ModelStage) {
     Remove-Item -LiteralPath $ModelStage -Recurse -Force
 }
@@ -64,6 +75,8 @@ $StagedDetector = Join-Path $ModelStage "scrfd_10g_bnkps.onnx"
 $StagedRecognizer = Join-Path $ModelStage "LVFace-B_Glint360K.onnx"
 Copy-Item -LiteralPath $ModelPaths[0] -Destination $StagedDetector
 Copy-Item -LiteralPath $ModelPaths[1] -Destination $StagedRecognizer
+$BackendStage = Join-Path $ModelStage "backend.txt"
+$Backend | Set-Content -LiteralPath $BackendStage -Encoding ascii
 if (Test-Path -LiteralPath $BundleDirectory) {
     Remove-Item -LiteralPath $BundleDirectory -Recurse -Force
 }
@@ -76,37 +89,41 @@ $PyInstallerArguments = @(
     "--contents-directory", "_internal",
     "--paths", (Join-Path $ProjectRoot "src"),
     "--collect-all", "onnxruntime",
-    "--distpath", $OutputDirectory,
+    "--distpath", $BackendOutputDirectory,
     "--workpath", $BuildRoot,
     "--specpath", $SpecRoot,
     "--add-data", "$($StagedDetector):models",
     "--add-data", "$($StagedRecognizer):models",
+    "--add-data", "$($BackendStage):.",
     $Launcher
 )
 Write-Host "Freezing Python, GUI, OpenCV and ONNX Runtime..." -ForegroundColor Cyan
 Invoke-CheckedPython @PyInstallerArguments
 
 $InternalDirectory = Join-Path $BundleDirectory "_internal"
-$CudaDirectory = Join-Path $InternalDirectory "cuda_dlls"
-New-Item -ItemType Directory -Force -Path $CudaDirectory | Out-Null
-$SitePackages = (& $VenvPython -c "import site; print(site.getsitepackages()[0])").Trim()
-if ($LASTEXITCODE -ne 0) {
-    throw "Could not resolve site-packages."
-}
-$NvidiaRoot = Join-Path $SitePackages "nvidia"
-if (-not (Test-Path -LiteralPath $NvidiaRoot -PathType Container)) {
-    throw "Bundled CUDA libraries are missing. Reinstall onnxruntime-gpu[cuda,cudnn]."
-}
-$CudaDlls = Get-ChildItem -LiteralPath $NvidiaRoot -Recurse -File -Filter "*.dll"
-if (-not $CudaDlls) {
-    throw "No CUDA/cuDNN DLLs were found below $NvidiaRoot"
-}
-foreach ($Dll in $CudaDlls) {
-    Copy-Item -LiteralPath $Dll.FullName -Destination (Join-Path $CudaDirectory $Dll.Name) -Force
-}
-foreach ($Pattern in @("cudart64*.dll", "cublas64*.dll", "cudnn64*.dll")) {
-    if (-not (Get-ChildItem -LiteralPath $CudaDirectory -File -Filter $Pattern)) {
-        throw "Offline bundle is incomplete; missing $Pattern"
+if ($Backend -eq "cuda") {
+    $CudaDirectory = Join-Path $InternalDirectory "cuda_dlls"
+    New-Item -ItemType Directory -Force -Path $CudaDirectory | Out-Null
+    $SitePackages = (& $VenvPython -c "import site; print(site.getsitepackages()[0])").Trim()
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not resolve site-packages."
+    }
+    $NvidiaRoot = Join-Path $SitePackages "nvidia"
+    if (-not (Test-Path -LiteralPath $NvidiaRoot -PathType Container)) {
+        throw "Bundled CUDA libraries are missing. Reinstall onnxruntime-gpu[cuda,cudnn]."
+    }
+    $CudaDlls = Get-ChildItem -LiteralPath $NvidiaRoot -Recurse -File -Filter "*.dll"
+    if (-not $CudaDlls) {
+        throw "No CUDA/cuDNN DLLs were found below $NvidiaRoot"
+    }
+    foreach ($Dll in $CudaDlls) {
+        Copy-Item -LiteralPath $Dll.FullName `
+            -Destination (Join-Path $CudaDirectory $Dll.Name) -Force
+    }
+    foreach ($Pattern in @("cudart64*.dll", "cublas64*.dll", "cudnn64*.dll")) {
+        if (-not (Get-ChildItem -LiteralPath $CudaDirectory -File -Filter $Pattern)) {
+            throw "Offline bundle is incomplete; missing $Pattern"
+        }
     }
 }
 
@@ -156,5 +173,5 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
     [IO.Compression.CompressionLevel]::Optimal,
     $false
 )
-Write-Host "Offline folder: $BundleDirectory" -ForegroundColor Green
-Write-Host "Offline archive: $ArchivePath" -ForegroundColor Green
+Write-Host "Offline $Backend folder: $BundleDirectory" -ForegroundColor Green
+Write-Host "Offline $Backend archive: $ArchivePath" -ForegroundColor Green

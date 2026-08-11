@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -15,13 +16,14 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 def _detector_size() -> tuple[int, int]:
-    value = os.environ.get("FACE_MATCHING_DETECTOR_SIZE", "960").strip()
+    default_size = "640" if _gpu_backend() == "directml" else "960"
+    value = os.environ.get("FACE_MATCHING_DETECTOR_SIZE", default_size).strip()
     try:
         size = int(value)
     except ValueError:
-        size = 960
+        size = int(default_size)
     if size not in {640, 960, 1280}:
-        size = 960
+        size = int(default_size)
     return size, size
 
 
@@ -30,6 +32,16 @@ def _gpu_device_id() -> int:
         return max(0, int(os.environ.get("FACE_MATCHING_GPU", "0")))
     except ValueError:
         return 0
+
+
+def _gpu_backend() -> str:
+    value = os.environ.get("FACE_MATCHING_GPU_BACKEND", "").strip().lower()
+    if not value:
+        frozen_root = getattr(sys, "_MEIPASS", None)
+        backend_file = Path(frozen_root) / "backend.txt" if frozen_root else None
+        if backend_file and backend_file.is_file():
+            value = backend_file.read_text(encoding="ascii").strip().lower()
+    return value if value in {"auto", "cuda", "directml"} else "auto"
 
 
 def _model_id() -> str:
@@ -49,6 +61,7 @@ class EngineConfig:
         os.environ.get("FACE_MATCHING_RECOGNIZER_MODEL", model_dir() / "LVFace-B_Glint360K.onnx")
     ))
     model_id: str = field(default_factory=_model_id)
+    gpu_backend: str = field(default_factory=_gpu_backend)
     gpu_device_id: int = field(default_factory=_gpu_device_id)
     detector_size: tuple[int, int] = field(default_factory=_detector_size)
     detector_threshold: float = 0.40

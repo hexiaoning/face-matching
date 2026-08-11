@@ -20,8 +20,11 @@ class LVFaceRecognizer:
         model_path: str,
         prefer_tensorrt: bool = False,
         device_id: int = 0,
+        gpu_backend: str = "auto",
     ) -> None:
-        self.session = create_gpu_session(model_path, prefer_tensorrt, device_id)
+        self.session = create_gpu_session(
+            model_path, prefer_tensorrt, device_id, gpu_backend
+        )
         input_meta = self.session.get_inputs()[0]
         self.input_name = input_meta.name
         self.output_name = self.session.get_outputs()[0].name
