@@ -7,6 +7,8 @@ import numpy as np
 from .database import FaceDatabase, GallerySample
 from .vision.recognizer import l2_normalize
 
+TARGET_PERSON_ID = "__target_search__"
+
 
 @dataclass(frozen=True, slots=True)
 class MatchResult:
@@ -17,6 +19,82 @@ class MatchResult:
     score: float
     second_score: float
     margin: float
+
+
+@dataclass(frozen=True, slots=True)
+class TargetMatchResult:
+    """A verification decision for one requested person and one video track."""
+
+    decision: str
+    score: float
+    best_score: float
+    support: int
+    observations: int
+
+    @property
+    def accepted(self) -> bool:
+        return self.decision == "confirmed"
+
+    @property
+    def review(self) -> bool:
+        return self.decision == "review"
+
+
+class TargetMatcher:
+    """Verify one target from repeated frames instead of doing 1:N identification."""
+
+    def __init__(
+        self,
+        references: list[np.ndarray],
+        threshold: float = 0.18,
+        review_threshold: float = 0.12,
+        min_support: int = 4,
+        top_k: int = 5,
+    ) -> None:
+        if not references:
+            raise ValueError("目标人物至少需要一个有效人脸特征")
+        if not 0.0 <= review_threshold < threshold <= 1.0:
+            raise ValueError("目标检索阈值无效")
+        self.reference_matrix = np.vstack(
+            [l2_normalize(item) for item in references]
+        ).astype(np.float32)
+        self.threshold = float(threshold)
+        self.review_threshold = float(review_threshold)
+        self.min_support = max(2, int(min_support))
+        self.top_k = max(1, int(top_k))
+
+    def match(self, observations: list[tuple[np.ndarray, float]]) -> TargetMatchResult:
+        if not observations:
+            return TargetMatchResult("collecting", 0.0, 0.0, 0, 0)
+        matrix = np.vstack([l2_normalize(item[0]) for item in observations]).astype(
+            np.float32
+        )
+        if matrix.shape[1] != self.reference_matrix.shape[1]:
+            raise ValueError("目标照片与视频人脸的特征维度不一致")
+        qualities = np.asarray(
+            [max(float(item[1]), 0.05) for item in observations], dtype=np.float32
+        )
+        # Keep alternate reference alignments separate. Taking the best view
+        # avoids averaging away a useful pose while repeated video support
+        # prevents one weak coincidental frame from becoming a hit.
+        per_observation = np.max(matrix @ self.reference_matrix.T, axis=1)
+        count = min(self.top_k, len(per_observation))
+        selected = np.argsort(per_observation)[::-1][:count]
+        best_score = float(per_observation[selected[0]])
+        supported_mean = float(
+            np.average(per_observation[selected], weights=qualities[selected] ** 2)
+        )
+        score = 0.60 * best_score + 0.40 * supported_mean
+        support = int(np.count_nonzero(per_observation >= self.threshold))
+        if score >= self.threshold and support >= self.min_support:
+            decision = "confirmed"
+        elif best_score >= self.review_threshold:
+            decision = "review"
+        elif len(observations) >= self.min_support:
+            decision = "rejected"
+        else:
+            decision = "collecting"
+        return TargetMatchResult(decision, score, best_score, support, len(observations))
 
 
 @dataclass(slots=True)

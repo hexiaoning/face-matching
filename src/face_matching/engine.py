@@ -3,13 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from .config import AppConfig
 from .database import FaceDatabase
 from .errors import EnrollmentError
 from .gpu import create_gpu_session, resolve_gpu_backend
-from .matching import GalleryMatcher
+from .matching import GalleryMatcher, TargetMatcher
 from .models import feature_model_id, profile_spec, required_paths
 from .vision.alignment import align_face
 from .vision.detector import Detection, SCRFDDetector
@@ -42,6 +43,23 @@ class FrameResult:
     tracks: tuple[TrackView, ...]
     detected_faces: int
     usable_faces: int
+
+
+def reference_alignment_variants(aligned_face: np.ndarray) -> list[np.ndarray]:
+    """Return conservative alignment alternatives for a one-off target photo."""
+    variants = [np.ascontiguousarray(aligned_face)]
+    for horizontal_shift in (-2.0, 2.0):
+        matrix = np.asarray([[1.0, 0.0, horizontal_shift], [0.0, 1.0, 0.0]], dtype=np.float32)
+        shifted = cv2.warpAffine(
+            aligned_face,
+            matrix,
+            (112, 112),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REFLECT_101,
+        )
+        variants.append(shifted)
+    variants.append(cv2.resize(aligned_face[2:110, 2:110], (112, 112), interpolation=cv2.INTER_LINEAR))
+    return variants
 
 
 class FaceEngine:
@@ -80,6 +98,8 @@ class FaceEngine:
             min_margin=config.match_margin,
         )
         self.tracker = FaceTracker(max_misses=config.track_max_misses)
+        self.target_matcher: TargetMatcher | None = None
+        self.target_name = "目标人物"
 
     def reset_video(self) -> None:
         self.tracker.reset()
@@ -88,10 +108,55 @@ class FaceEngine:
         self.matcher.refresh()
         self.tracker.invalidate_identities()
 
-    def enrollment_feature(self, image: np.ndarray) -> EnrollmentFeature:
-        detections = self.detector.detect(image)
+    def clear_target(self) -> None:
+        self.target_matcher = None
+        self.target_name = "目标人物"
+        self.tracker.invalidate_identities()
+
+    def set_target_image(self, image: np.ndarray, name: str = "目标人物") -> EnrollmentFeature:
+        aligned, quality, detection = self._prepare_enrollment_face(image)
+        references = self.embedder.embed_many(
+            reference_alignment_variants(aligned),
+            mirror_augmentation=self.mirror_augmentation,
+        )
+        self.target_matcher = TargetMatcher(
+            references,
+            threshold=self.config.target_match_threshold,
+            review_threshold=self.config.target_review_threshold,
+            min_support=self.config.target_min_support,
+        )
+        self.target_name = name.strip() or "目标人物"
+        self.tracker.invalidate_identities()
+        return EnrollmentFeature(references[0], quality, detection)
+
+    def _prepare_enrollment_face(
+        self, image: np.ndarray
+    ) -> tuple[np.ndarray, Quality, Detection]:
+        if image is None or image.size == 0:
+            raise EnrollmentError("无法读取照片")
+        working = image
+        offset_x = 0
+        offset_y = 0
+        detections = self.detector.detect(working)
         if not detections:
-            raise EnrollmentError("照片中没有检测到人脸")
+            # Portraits cropped tightly around the chin/forehead can fall
+            # outside detector anchor priors. Add neutral photographic context
+            # for detection and alignment; no synthetic facial detail is made.
+            height, width = image.shape[:2]
+            offset_x = max(16, int(round(width * 0.35)))
+            offset_y = max(16, int(round(height * 0.35)))
+            working = cv2.copyMakeBorder(
+                image,
+                offset_y,
+                offset_y,
+                offset_x,
+                offset_x,
+                cv2.BORDER_CONSTANT,
+                value=(127, 127, 127),
+            )
+            detections = self.detector.detect(working)
+        if not detections:
+            raise EnrollmentError("照片中没有检测到人脸；请保留头部四周空间后重试")
         ranked = sorted(
             detections,
             key=lambda item: item.width * item.height * item.score,
@@ -109,12 +174,23 @@ class FaceEngine:
             raise EnrollmentError(
                 f"人脸过小（{min(detection.width, detection.height):.0f}px），请使用更清晰的照片"
             )
-        aligned = align_face(image, detection.landmarks)
+        aligned = align_face(working, detection.landmarks)
         quality = assess_quality(aligned, detection)
         if quality.total < self.config.enrollment_min_quality:
             raise EnrollmentError(
                 f"照片质量过低（{quality.total:.2f}），请换用更清晰或更正面的照片"
             )
+        bbox = detection.bbox - np.asarray(
+            [offset_x, offset_y, offset_x, offset_y], dtype=np.float32
+        )
+        bbox[[0, 2]] = np.clip(bbox[[0, 2]], 0, image.shape[1] - 1)
+        bbox[[1, 3]] = np.clip(bbox[[1, 3]], 0, image.shape[0] - 1)
+        landmarks = detection.landmarks - np.asarray([offset_x, offset_y], dtype=np.float32)
+        original_detection = Detection(bbox, detection.score, landmarks)
+        return aligned, quality, original_detection
+
+    def enrollment_feature(self, image: np.ndarray) -> EnrollmentFeature:
+        aligned, quality, detection = self._prepare_enrollment_face(image)
         return EnrollmentFeature(
             self.embedder.embed(aligned, mirror_augmentation=self.mirror_augmentation),
             quality,
@@ -157,6 +233,15 @@ class FaceEngine:
             if len(track.observations) < self.config.min_track_observations:
                 continue
             if track.embedding_version == track.matched_embedding_version:
+                continue
+            if self.target_matcher is not None:
+                track.aggregate(
+                    self.config.track_top_k,
+                    self.config.track_consistency_threshold,
+                )
+                track.apply_target_match(
+                    self.target_matcher.match(track.observations), self.target_name
+                )
                 continue
             aggregate = track.aggregate(
                 self.config.track_top_k,

@@ -40,6 +40,7 @@ from ..engine import FaceEngine, FrameResult
 from ..enrollment import EnrollmentService
 from ..errors import FaceMatchingError, ModelMissingError
 from ..gpu import assert_gpu_available
+from ..matching import TARGET_PERSON_ID
 from ..models import PROFILES, available_profiles, download_profile, profile_spec, required_paths
 from ..paths import is_frozen_app
 from ..results import VideoMatchList
@@ -208,6 +209,7 @@ class VideoWorker(QThread):
                                     "score": track.score,
                                     "quality": track.quality,
                                     "new_track_match": previous_score is None,
+                                    "target_search": track.person_id == TARGET_PERSON_ID,
                                 }
                             )
                 self.frame_ready.emit(self._qimage(frame, last_result))
@@ -254,7 +256,7 @@ class MainWindow(QMainWindow):
             except ModelMissingError:
                 if is_frozen_app():
                     raise ModelMissingError(
-                        "离线便携包缺少当前模型。请使用完整的 v2.4 离线包，"
+                        "离线便携包缺少当前模型。请使用完整的 v3.2 离线包，"
                         "或在联网构建机上重新打包；目标机不会尝试联网下载。"
                     )
                 profile = profile_spec(self.config.model_profile)
@@ -316,12 +318,19 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(tab, "视频识别")
         self.source_edit = QLineEdit()
         self.source_edit.setPlaceholderText("视频文件、RTSP/RTMP 地址，或摄像头编号（例如 0）")
+        self.target_edit = QLineEdit()
+        self.target_edit.setReadOnly(True)
+        self.target_edit.setPlaceholderText("可选；选择后使用 1:1 多帧目标检索")
         browse = QPushButton("选择视频…")
         camera = QPushButton("摄像头 0")
+        self.target_browse = QPushButton("选择目标照片…")
+        self.target_clear = QPushButton("清除目标")
         self.start_button = QPushButton("开始识别")
         self.stop_button = QPushButton("停止")
         browse.clicked.connect(self._browse_video)
         camera.clicked.connect(lambda: self.source_edit.setText("0"))
+        self.target_browse.clicked.connect(self._browse_target)
+        self.target_clear.clicked.connect(self.target_edit.clear)
         self.start_button.clicked.connect(self.start_video)
         self.stop_button.clicked.connect(self.stop_video)
         source_row = QHBoxLayout()
@@ -331,6 +340,15 @@ class MainWindow(QMainWindow):
         source_row.addWidget(camera)
         source_row.addWidget(self.start_button)
         source_row.addWidget(self.stop_button)
+        target_row = QHBoxLayout()
+        target_row.addWidget(QLabel("目标照片："))
+        target_row.addWidget(self.target_edit, 1)
+        target_row.addWidget(self.target_browse)
+        target_row.addWidget(self.target_clear)
+        target_hint = QLabel(
+            "目标检索会直接回答该人物是否经过；不选照片时仍使用人员库通用识别。"
+        )
+        target_hint.setStyleSheet("color:#6f8296;")
         self.video_label = QLabel("选择视频、输入 RTSP 地址或使用摄像头 0")
         self.video_label.setAlignment(Qt.AlignCenter)
         self.video_label.setMinimumSize(880, 540)
@@ -345,12 +363,16 @@ class MainWindow(QMainWindow):
         body.addWidget(self.events, 2)
         layout = QVBoxLayout(tab)
         layout.addLayout(source_row)
+        layout.addLayout(target_row)
+        layout.addWidget(target_hint)
         layout.addLayout(body, 1)
         self._set_video_enabled(False)
 
     def _set_video_enabled(self, ready: bool) -> None:
         self.start_button.setEnabled(ready)
         self.stop_button.setEnabled(False)
+        self.target_browse.setEnabled(ready)
+        self.target_clear.setEnabled(ready)
 
     def _build_people_tab(self) -> None:
         tab = QWidget()
@@ -411,6 +433,18 @@ class MainWindow(QMainWindow):
         self.match_margin.setRange(0.0, 0.3)
         self.match_margin.setSingleStep(0.01)
         self.match_margin.setValue(self.config.match_margin)
+        self.target_match_threshold = QDoubleSpinBox()
+        self.target_match_threshold.setRange(0.05, 0.80)
+        self.target_match_threshold.setSingleStep(0.01)
+        self.target_match_threshold.setValue(self.config.target_match_threshold)
+        self.target_review_threshold = QDoubleSpinBox()
+        self.target_review_threshold.setRange(0.01, 0.79)
+        self.target_review_threshold.setSingleStep(0.01)
+        self.target_review_threshold.setValue(self.config.target_review_threshold)
+        self.target_min_support = QSpinBox()
+        self.target_min_support.setRange(2, 20)
+        self.target_min_support.setSuffix(" 帧")
+        self.target_min_support.setValue(self.config.target_min_support)
         self.min_quality = QDoubleSpinBox()
         self.min_quality.setRange(0.0, 0.9)
         self.min_quality.setSingleStep(0.02)
@@ -441,6 +475,9 @@ class MainWindow(QMainWindow):
         form.addRow("检测置信度：", self.detector_threshold)
         form.addRow("身份相似度阈值：", self.match_threshold)
         form.addRow("第一/第二名最小差值：", self.match_margin)
+        form.addRow("目标确认相似度：", self.target_match_threshold)
+        form.addRow("疑似目标相似度：", self.target_review_threshold)
+        form.addRow("目标确认支持帧：", self.target_min_support)
         form.addRow("最低图像质量：", self.min_quality)
         form.addRow("检测输入尺寸：", self.detector_size)
         form.addRow("最小人脸边长：", self.min_face_size)
@@ -450,7 +487,8 @@ class MainWindow(QMainWindow):
         form.addRow("模型状态：", self.model_label)
         form.addRow("", save)
         note = QLabel(
-            "阈值必须用现场摄像头数据校准。高安全场景建议提高相似度阈值，并保留人工复核；"
+            "目标照片模式使用较低的 1:1 阈值，但必须由多帧共同支持；低于确认阈值的"
+            "相似轨迹会标成“疑似目标·待复核”。阈值仍须用现场数据校准；"
             "极端侧脸、严重模糊或人脸小于约 28 像素时，系统会宁可不认也不强猜。"
         )
         note.setWordWrap(True)
@@ -466,6 +504,13 @@ class MainWindow(QMainWindow):
         if path:
             self.source_edit.setText(path)
 
+    def _browse_target(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择目标人物照片", "", "图片 (*.jpg *.jpeg *.png *.bmp *.webp)"
+        )
+        if path:
+            self.target_edit.setText(path)
+
     def start_video(self) -> None:
         if not self.engine:
             return
@@ -475,6 +520,25 @@ class MainWindow(QMainWindow):
             return
         if not self.stop_video():
             return
+        target_path = self.target_edit.text().strip()
+        if target_path:
+            target_image = read_image(target_path)
+            if target_image is None:
+                QMessageBox.warning(self, "目标照片无效", "无法读取所选目标照片。")
+                return
+            progress = QProgressDialog("正在提取目标人物特征…", None, 0, 0, self)
+            progress.setWindowModality(Qt.WindowModal)
+            progress.show()
+            QApplication.processEvents()
+            try:
+                self.engine.set_target_image(target_image, Path(target_path).stem)
+            except Exception as exc:
+                QMessageBox.critical(self, "目标照片不可用", str(exc))
+                return
+            finally:
+                progress.close()
+        else:
+            self.engine.clear_target()
         self.events.setRowCount(0)
         self.video_matches.clear()
         self.worker = VideoWorker(self.engine, source, self.config.frame_interval)
@@ -485,6 +549,8 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self._video_finished)
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
+        self.target_browse.setEnabled(False)
+        self.target_clear.setEnabled(False)
         self.worker.start()
 
     def stop_video(self) -> bool:
@@ -501,11 +567,19 @@ class MainWindow(QMainWindow):
         if self.engine:
             self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
+        self.target_browse.setEnabled(bool(self.engine))
+        self.target_clear.setEnabled(bool(self.engine))
         return True
 
     def _video_finished(self) -> None:
         self.start_button.setEnabled(bool(self.engine))
         self.stop_button.setEnabled(False)
+        self.target_browse.setEnabled(bool(self.engine))
+        self.target_clear.setEnabled(bool(self.engine))
+        if self.engine and self.engine.target_matcher is not None:
+            conclusion = "已确认目标经过" if len(self.video_matches) else "未确认目标经过"
+            self.statusBar().showMessage(f"目标检索完成 · {conclusion}")
+            return
         self.statusBar().showMessage(
             f"视频处理完成 · 匹配 {len(self.video_matches)} 人 · 已按 score 倒序排列"
         )
@@ -532,7 +606,11 @@ class MainWindow(QMainWindow):
                 )
                 for column, value in enumerate(values):
                     self.events.setItem(row, column, QTableWidgetItem(value))
-        if self.database and event.get("new_track_match", True):
+        if (
+            self.database
+            and not event.get("target_search", False)
+            and event.get("new_track_match", True)
+        ):
             self.database.log_event(
                 event["person_id"], self.source_edit.text().strip(), event["track_id"],
                 event["score"], event["quality"]
@@ -688,6 +766,9 @@ class MainWindow(QMainWindow):
         self.config.detector_threshold = self.detector_threshold.value()
         self.config.match_threshold = self.match_threshold.value()
         self.config.match_margin = self.match_margin.value()
+        self.config.target_match_threshold = self.target_match_threshold.value()
+        self.config.target_review_threshold = self.target_review_threshold.value()
+        self.config.target_min_support = self.target_min_support.value()
         self.config.min_quality = self.min_quality.value()
         self.config.detector_size = self.detector_size.currentData()
         self.config.min_face_size = self.min_face_size.value()

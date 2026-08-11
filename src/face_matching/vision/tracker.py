@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..matching import MatchResult
+from ..matching import TARGET_PERSON_ID, MatchResult, TargetMatchResult
 from .recognizer import l2_normalize
 
 
@@ -130,6 +130,28 @@ class Track:
                 self.name = "陌生人"
                 self.person_id = None
                 self.id_card = ""
+
+    def apply_target_match(self, match: TargetMatchResult, target_name: str) -> None:
+        if self.matched_embedding_version == self.embedding_version:
+            return
+        self.matched_embedding_version = self.embedding_version
+        if self.person_id == TARGET_PERSON_ID:
+            self.score = max(self.score, match.score)
+            return
+        self.score = match.score
+        self.id_card = ""
+        if match.accepted:
+            self.name = f"目标：{target_name}"
+            self.person_id = TARGET_PERSON_ID
+        elif match.review:
+            self.name = "疑似目标·待复核"
+            self.person_id = None
+        elif match.decision == "rejected":
+            self.name = "非目标"
+            self.person_id = None
+        else:
+            self.name = "目标比对中"
+            self.person_id = None
 
     def invalidate_identity(self) -> None:
         self.name = "采集中"

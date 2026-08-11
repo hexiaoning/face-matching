@@ -3,8 +3,10 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from face_matching.matching import MatchResult
-from face_matching.vision.detector import distance_to_bbox, distance_to_landmarks, nms
+from face_matching.config import AppConfig
+from face_matching.engine import FaceEngine, reference_alignment_variants
+from face_matching.matching import TARGET_PERSON_ID, MatchResult, TargetMatchResult
+from face_matching.vision.detector import Detection, distance_to_bbox, distance_to_landmarks, nms
 from face_matching.vision.recognizer import FaceEmbedder, l2_normalize
 from face_matching.vision.tracker import FaceTracker, Observation, bbox_iou, robust_aggregate
 
@@ -133,3 +135,64 @@ def test_tracker_motion_prediction_preserves_fast_moving_track():
         )
         ids.append(tracks[-1].id)
     assert ids == [1, 1, 1]
+
+
+def test_reference_alignment_variants_are_distinct_model_sized_images():
+    face = np.arange(112 * 112 * 3, dtype=np.uint8).reshape(112, 112, 3)
+    variants = reference_alignment_variants(face)
+
+    assert len(variants) == 4
+    assert all(item.shape == (112, 112, 3) for item in variants)
+    assert any(not np.array_equal(face, item) for item in variants[1:])
+
+
+def test_tightly_cropped_enrollment_retries_with_neutral_context():
+    class ContextOnlyDetector:
+        def __init__(self):
+            self.widths = []
+
+        def detect(self, image):
+            self.widths.append(image.shape[1])
+            if image.shape[1] == 100:
+                return []
+            offset = 35.0
+            landmarks = np.asarray(
+                [[32, 38], [68, 38], [50, 55], [36, 73], [64, 73]], dtype=np.float32
+            ) + offset
+            return [
+                Detection(
+                    np.asarray([20, 18, 80, 85], dtype=np.float32) + offset,
+                    0.9,
+                    landmarks,
+                )
+            ]
+
+    engine = FaceEngine.__new__(FaceEngine)
+    engine.config = AppConfig(enrollment_min_quality=0.0)
+    engine.detector = ContextOnlyDetector()
+    image = np.tile(np.arange(100, dtype=np.uint8), (100, 1))
+    image = np.repeat(image[:, :, None], 3, axis=2)
+
+    aligned, _, detection = engine._prepare_enrollment_face(image)
+
+    assert engine.detector.widths == [100, 170]
+    assert aligned.shape == (112, 112, 3)
+    assert np.allclose(detection.bbox, [20, 18, 80, 85])
+
+
+def test_target_confirmation_is_sticky_for_the_track():
+    tracker = FaceTracker(max_misses=2)
+    embedding = l2_normalize(np.asarray([1.0, 0.0], dtype=np.float32))
+    track = tracker.update(
+        [Observation(np.asarray([0, 0, 20, 20]), 0.9, embedding, 0.8)], 1
+    )[0]
+    track.apply_target_match(TargetMatchResult("confirmed", 0.22, 0.23, 4, 4), "person.jpg")
+    assert track.person_id == TARGET_PERSON_ID
+    assert track.name == "目标：person.jpg"
+
+    tracker.update(
+        [Observation(np.asarray([1, 0, 21, 20]), 0.9, embedding, 0.8)], 2
+    )
+    track.apply_target_match(TargetMatchResult("rejected", 0.05, 0.06, 0, 5), "person.jpg")
+    assert track.person_id == TARGET_PERSON_ID
+    assert track.score == pytest.approx(0.22)

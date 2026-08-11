@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from face_matching.database import FaceDatabase, FaceSampleInput
-from face_matching.matching import GalleryMatcher
+from face_matching.matching import GalleryMatcher, TargetMatcher
 from face_matching.models import feature_model_id
 
 
@@ -103,3 +103,29 @@ def test_internal_event_log_preserves_video_source_verbatim(tmp_path):
     with database._connect() as connection:
         stored = connection.execute("SELECT source FROM recognition_events").fetchone()["source"]
     assert stored == source
+
+
+def test_target_matcher_accepts_repeated_weak_evidence_without_gallery_margin():
+    target = unit(1.0, 0.0, 0.0)
+    weak_same_person = unit(0.20, 0.98, 0.0)
+    matcher = TargetMatcher(
+        [target], threshold=0.18, review_threshold=0.10, min_support=4
+    )
+
+    review = matcher.match([(weak_same_person, 0.7)] * 3)
+    confirmed = matcher.match([(weak_same_person, 0.7)] * 4)
+
+    assert review.review is True
+    assert review.support == 3
+    assert confirmed.accepted is True
+    assert confirmed.score == pytest.approx(float(target @ weak_same_person))
+
+
+def test_target_matcher_rejects_unsupported_track():
+    matcher = TargetMatcher(
+        [unit(1.0, 0.0)], threshold=0.18, review_threshold=0.10, min_support=3
+    )
+    result = matcher.match([(unit(0.0, 1.0), 0.9)] * 3)
+
+    assert result.accepted is False
+    assert result.decision == "rejected"

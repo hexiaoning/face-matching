@@ -37,6 +37,9 @@ def test_tta_state_is_part_of_feature_model_id():
         ("detector_size", 100),
         ("match_threshold", 1.1),
         ("match_margin", 0.9),
+        ("target_match_threshold", 1.1),
+        ("target_review_threshold", -0.1),
+        ("target_min_support", 1),
         ("min_face_size", 8),
         ("frame_interval", 0),
         ("mirror_augmentation", 1),
@@ -50,3 +53,8 @@ def test_config_rejects_invalid_values(field, value):
     setattr(config, field, value)
     with pytest.raises(ValueError):
         config.validate()
+
+
+def test_config_rejects_target_review_threshold_above_confirmation():
+    with pytest.raises(ValueError, match="疑似目标阈值"):
+        AppConfig(target_match_threshold=0.18, target_review_threshold=0.19).validate()

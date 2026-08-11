@@ -18,6 +18,9 @@ class AppConfig:
     nms_threshold: float = 0.40
     match_threshold: float = 0.45
     match_margin: float = 0.06
+    target_match_threshold: float = 0.18
+    target_review_threshold: float = 0.12
+    target_min_support: int = 4
     min_face_size: int = 32
     min_quality: float = 0.22
     enrollment_min_quality: float = 0.30
@@ -42,6 +45,8 @@ class AppConfig:
             "detector_threshold",
             "nms_threshold",
             "match_threshold",
+            "target_match_threshold",
+            "target_review_threshold",
             "min_quality",
             "enrollment_min_quality",
             "track_consistency_threshold",
@@ -51,6 +56,8 @@ class AppConfig:
                 raise ValueError(f"{name} 必须在 0 到 1 之间")
         if not 0.0 <= self.match_margin <= 0.5:
             raise ValueError("match_margin 必须在 0 到 0.5 之间")
+        if self.target_review_threshold >= self.target_match_threshold:
+            raise ValueError("疑似目标阈值必须低于目标确认阈值")
         if self.min_face_size < 12:
             raise ValueError("最小人脸尺寸不能小于 12 像素")
         if self.frame_interval < 1:
@@ -61,6 +68,8 @@ class AppConfig:
             raise ValueError("轨迹参数必须大于 0")
         if self.track_max_misses < 1 or self.confirmation_matches < 1:
             raise ValueError("轨迹保留和确认次数必须大于 0")
+        if self.target_min_support < 2:
+            raise ValueError("目标确认至少需要 2 帧支持")
         return self
 
     @property
