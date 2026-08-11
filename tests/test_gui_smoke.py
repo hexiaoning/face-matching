@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -24,6 +25,7 @@ class FakeEngine:
             recognizer_model=Path("recognizer.onnx"),
         )
         self.provider = "CUDAExecutionProvider"
+        self.detector = SimpleNamespace(input_size=(960, 960))
 
     def detect(self, frame: np.ndarray) -> list:
         return []

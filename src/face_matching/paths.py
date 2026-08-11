@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 
@@ -31,6 +32,12 @@ def model_dir() -> Path:
         path = Path(custom).expanduser().resolve()
         path.mkdir(parents=True, exist_ok=True)
         return path
+    # PyInstaller exposes added data below _MEIPASS. Models in an offline
+    # bundle are immutable application assets; user data still lives under
+    # LOCALAPPDATA and remains writable across upgrades.
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    if frozen_root:
+        return Path(frozen_root) / "models"
     return ensure_app_dirs() / "models"
 
 

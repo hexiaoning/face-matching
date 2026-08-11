@@ -83,7 +83,12 @@ class MainWindow(QMainWindow):
         self._update_source_label()
         self._update_gallery_status()
         self._threshold_changed(self.threshold_slider.value())
-        self.statusBar().showMessage(f"GPU: {engine.provider}  |  模型: {engine.config.model_id}")
+        detector_size = "×".join(str(value) for value in engine.detector.input_size)
+        tta = "镜像增强" if engine.config.mirror_augmentation else "单次特征"
+        self.statusBar().showMessage(
+            f"GPU: {engine.provider}  |  检测: {detector_size}  |  {tta}  |  "
+            f"模型: {engine.config.model_id}"
+        )
         if initial_source is not None:
             self.start_stream()
 
@@ -284,7 +289,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "关于",
-            "监控视频人脸检索 0.1\n\n"
+            "监控视频人脸检索 0.2.1\n\n"
             "SCRFD-10G + LVFace-B + 多帧质量加权聚合\n"
             "推理强制使用 CUDA，不允许 CPU fallback。\n\n"
             "注意：默认下载的预训练权重仅限非商业研究；生产部署需替换为已获授权的 ONNX 权重。",

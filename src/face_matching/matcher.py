@@ -35,6 +35,7 @@ class GalleryMatcher:
         self._samples: list[GallerySample] = []
         self._matrix = np.empty((0, 0), dtype=np.float32)
         self._person_indices: dict[str, list[int]] = {}
+        self._person_centroids: dict[str, np.ndarray] = {}
         self._revision = 0
         self.reload()
 
@@ -66,10 +67,22 @@ class GalleryMatcher:
         people: dict[str, list[int]] = {}
         for index, sample in enumerate(samples):
             people.setdefault(sample.person_id, []).append(index)
+        centroids: dict[str, np.ndarray] = {}
+        for person_id, indices in people.items():
+            rows = matrix[indices]
+            weights = np.asarray(
+                [max(samples[index].quality, 0.05) for index in indices],
+                dtype=np.float32,
+            )
+            centroid = np.average(rows, axis=0, weights=weights)
+            if float(np.linalg.norm(centroid)) <= 1e-12:
+                centroid = rows[int(np.argmax(weights))]
+            centroids[person_id] = l2_normalize(centroid.reshape(1, -1))[0]
         with self._lock:
             self._samples = samples
             self._matrix = matrix
             self._person_indices = people
+            self._person_centroids = centroids
             self._revision += 1
 
     def match(self, embedding: np.ndarray, threshold: float, min_margin: float) -> MatchResult:
@@ -88,7 +101,15 @@ class GalleryMatcher:
                     dtype=np.float32,
                 )
                 weighted_mean = float(np.average(top_scores, weights=quality_weights))
-                score = float(0.72 * top_scores[0] + 0.28 * weighted_mean)
+                centroid_score = float(self._person_centroids[person_id] @ query)
+                # A strong individual pose remains dominant, while the
+                # quality-weighted person centroid rewards agreement across
+                # several enrollment photos.
+                score = float(
+                    0.62 * top_scores[0]
+                    + 0.23 * weighted_mean
+                    + 0.15 * centroid_score
+                )
                 ranked.append((score, person_id, indices[0]))
             ranked.sort(reverse=True, key=lambda item: item[0])
             best_score, person_id, sample_index = ranked[0]

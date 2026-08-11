@@ -66,14 +66,39 @@ class FaceTrack:
         self.last_embedding_frame = frame_index
         self.embedding_version += 1
 
-    def aggregate_embedding(self) -> np.ndarray | None:
+    def aggregate_embedding(
+        self,
+        top_k: int = 10,
+        similarity_floor: float = 0.12,
+    ) -> np.ndarray | None:
         if not self.embeddings:
             return None
-        matrix = np.stack(self.embeddings)
+        matrix = l2_normalize(np.stack(self.embeddings))
         qualities = np.asarray(self.qualities, dtype=np.float32)
         recency = np.linspace(0.75, 1.0, len(qualities), dtype=np.float32)
-        weights = np.maximum(qualities, 0.05) ** 1.5 * recency
+
+        # A brief occlusion or an association mistake must not poison the
+        # identity template. Use the most central observation as a medoid and
+        # drop embeddings that disagree strongly with that temporal cluster.
+        if len(matrix) >= 3:
+            cosine = matrix @ matrix.T
+            support = np.average(cosine, axis=1, weights=np.maximum(qualities, 0.05))
+            medoid = int(np.argmax(support))
+            consistent = cosine[medoid] >= similarity_floor
+            if np.count_nonzero(consistent) >= 2:
+                matrix = matrix[consistent]
+                qualities = qualities[consistent]
+                recency = recency[consistent]
+
+        priority = qualities * 0.85 + recency * 0.15
+        selected = np.argsort(priority)[::-1][:max(1, top_k)]
+        matrix = matrix[selected]
+        qualities = qualities[selected]
+        recency = recency[selected]
+        weights = np.maximum(qualities, 0.05) ** 2 * recency
         aggregate = np.sum(matrix * weights[:, None], axis=0) / np.sum(weights)
+        if float(np.linalg.norm(aggregate)) <= 1e-12:
+            return matrix[int(np.argmax(weights))].copy()
         return l2_normalize(aggregate.reshape(1, -1))[0]
 
     def update_identity(self, match: MatchResult, confirmations: int) -> bool:

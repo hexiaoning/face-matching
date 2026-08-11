@@ -23,9 +23,12 @@ class FaceEngine:
             threshold=self.config.detector_threshold,
             nms_threshold=self.config.nms_threshold,
             prefer_tensorrt=self.config.prefer_tensorrt,
+            device_id=self.config.gpu_device_id,
         )
         self.recognizer = LVFaceRecognizer(
-            str(self.config.recognizer_model), self.config.prefer_tensorrt
+            str(self.config.recognizer_model),
+            self.config.prefer_tensorrt,
+            self.config.gpu_device_id,
         )
         self._inference_lock = threading.RLock()
         self._warm_up_gpu()
@@ -52,7 +55,10 @@ class FaceEngine:
 
     def embed(self, aligned_faces: list[np.ndarray]) -> np.ndarray:
         with self._inference_lock:
-            return self.recognizer.embed_batch(aligned_faces)
+            return self.recognizer.embed_batch(
+                aligned_faces,
+                mirror_augmentation=self.config.mirror_augmentation,
+            )
 
     def _warm_up_gpu(self) -> None:
         """Run both networks once so CUDA failures happen before the GUI opens."""
@@ -61,7 +67,8 @@ class FaceEngine:
             with self._inference_lock:
                 self.detector.detect(np.zeros((height, width, 3), dtype=np.uint8))
                 self.recognizer.embed_batch(
-                    [np.zeros((112, 112, 3), dtype=np.uint8)]
+                    [np.zeros((112, 112, 3), dtype=np.uint8)],
+                    mirror_augmentation=self.config.mirror_augmentation,
                 )
         except Exception as exc:
             raise GPUUnavailableError(

@@ -11,10 +11,11 @@
 - **SCRFD-10G**：检测人脸和五点关键点。SCRFD 在 WIDER FACE 困难集兼顾精度与速度，适合视频逐帧检测。
 - **五点仿射对齐**：把偏转、尺度不同的人脸统一到 LVFace 使用的 `112×112` ArcFace 模板。
 - **LVFace-B / Glint360K**：ICCV 2025 Highlight 的 Vision Transformer 人脸特征模型。官方报告在 IJB-C 上达到 TAR `90.06% @ FAR=1e-6`、`97.70% @ FAR=1e-4`，并提供 ONNX 权重。
+- **镜像测试增强**：录入照和视频探针都融合原图与水平镜像特征，提升姿态、光照和脸部不对称变化下的稳定性；动态批模型会合并为一次 GPU batch。
 - **质量门控**：综合检测置信度、人脸像素尺寸、拉普拉斯清晰度与五点姿态对称性。极差帧只显示、不进入身份判断。
-- **轨迹级聚合**：同一人脸轨迹保留多帧特征，按质量和时间加权后再匹配。模糊或非正面帧不会单独决定身份。
+- **稳健轨迹聚合**：同一人脸轨迹优先保留高质量/较新的多帧特征，以特征 medoid 排除轨迹切换或遮挡造成的离群帧，再做质量加权。模糊或非正面帧不会单独决定身份。
 - **开放集判定**：不仅要求最高余弦相似度超过阈值，还要求第一名和第二名之间有足够 margin，并用两次真实的新特征结果做时序确认。
-- **多参考照人员模板**：每个人的多个样本先在人员级别打分，清晰样本权重更高，减少单张照片的偶然性。
+- **多参考照人员模板**：融合最佳单张、质量加权 top-k 和人员中心特征，兼顾侧脸召回与多照片一致性，减少单张照片的偶然性。
 
 相关官方资料：
 
@@ -37,17 +38,24 @@
 | 显卡 | RTX 4070 SUPER 12GB |
 | 内存 | 64GB |
 | 系统 | Windows 11 64 位 |
-| Python | 64 位 Python 3.11～3.13 |
+| 目标机软件 | NVIDIA 驱动；无需 Python、CUDA Toolkit 或网络 |
 
-设备无需预装完整 CUDA Toolkit。安装脚本会通过 `onnxruntime-gpu[cuda,cudnn]` 安装 CUDA 12 / cuDNN 运行库；仍需安装支持该显卡的 NVIDIA 驱动。
+离线包已经包含 Python 运行时、ONNX Runtime GPU、CUDA 12 / cuDNN 9 DLL、OpenCV、PySide6 和模型。由于 NVIDIA 驱动需要匹配硬件和系统内核，它是目标机唯一需要预先安装的运行依赖。
 
-## 安装与启动
+## 离线打包与目标机部署
 
-1. 安装最新 NVIDIA 显卡驱动和 64 位 Python 3.11～3.13。
-2. 双击 `install.bat`。脚本创建 `.venv`、安装桌面与 CUDA 依赖、下载约 750 MB 模型，并执行两个模型的真实 GPU 推理自检。
-3. 双击 `start.bat`。
+联网的 Windows 11 **构建机**需要 NVIDIA GPU/驱动和 64 位 Python 3.11～3.13：
 
-安装失败时不会留下“看似成功”的状态。可在 PowerShell 中重新诊断：
+1. 双击 `build_offline_bundle.bat`。
+2. 脚本创建构建环境、安装固定大版本范围内的依赖、下载并校验约 750 MB 模型，然后用 PyInstaller 生成单目录应用。
+3. 脚本把 pip 安装的 CUDA/cuDNN DLL 收集到包内，并从冻结后的程序真实运行检测器和识别器；任一模型没有在 GPU 上成功推理都会中止打包。
+4. 产物为 `offline_dist\FaceMatching\` 和 `offline_dist\FaceMatching-offline-win64.zip`。
+
+把完整 `FaceMatching` 文件夹复制到**无网络目标机**，先双击 `GPU诊断.bat`，成功后双击 `启动.bat`。不要只复制 EXE。目标机不执行 pip、不下载模型，也不需要安装 Python 或 CUDA Toolkit。
+
+`install.bat` / `start.bat` 保留给源码开发和联网调试使用，不是离线交付流程。可向打包脚本传入 `-SkipModelDownload` 复用构建机上已校验的模型；`-SkipGpuSelfTest` 只用于无 GPU 的 CI，正式交付不得使用。
+
+源码环境安装失败时不会留下“看似成功”的状态。可在 PowerShell 中重新诊断：
 
 ```powershell
 .\.venv\Scripts\python.exe -m face_matching.diagnostics
@@ -80,7 +88,7 @@
 
 - `face_matching.sqlite3`：人员信息、特征向量、照片索引；
 - `photos\`：录入照片的本地副本；
-- `models\`：ONNX 模型。
+- `models\`：源码运行模式下载的 ONNX 模型；离线包使用包内只读模型。
 
 可用环境变量：
 
@@ -92,6 +100,9 @@
 | `FACE_MATCHING_DETECTOR_MODEL` | 自有 SCRFD 兼容 ONNX 模型 |
 | `FACE_MATCHING_RECOGNIZER_MODEL` | 自有 LVFace 兼容 ONNX 模型 |
 | `FACE_MATCHING_MODEL_ID` | 特征版本；更换识别模型时必须同时修改 |
+| `FACE_MATCHING_GPU` | NVIDIA GPU 编号，默认 `0` |
+| `FACE_MATCHING_DETECTOR_SIZE` | 动态检测模型输入边长：`640` / `960` / `1280`，默认效果优先的 `960` |
+| `FACE_MATCHING_MIRROR_TTA=0` | 关闭镜像测试增强以换取更快的识别速度；特征版本会改变，需重新录入 |
 | `FACE_MATCHING_TENSORRT=1` | 已正确安装 TensorRT 时优先使用它，否则默认 CUDA |
 
 模型改变后旧特征不能混用，应使用新的 `FACE_MATCHING_MODEL_ID` 并重新录入照片。

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ from .errors import GPUUnavailableError
 
 
 GPU_PROVIDERS = ("TensorrtExecutionProvider", "CUDAExecutionProvider")
+_DLL_DIRECTORY_HANDLES: list[Any] = []
 
 
 def preload_cuda_runtime() -> None:
@@ -17,8 +19,17 @@ def preload_cuda_runtime() -> None:
     preload = getattr(ort, "preload_dlls", None)
     if preload is None:
         return
+    directory = ""
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    if frozen_root:
+        bundled = Path(frozen_root) / "cuda_dlls"
+        if bundled.is_dir():
+            directory = str(bundled)
+            if os.name == "nt" and hasattr(os, "add_dll_directory"):
+                handle = os.add_dll_directory(directory)
+                _DLL_DIRECTORY_HANDLES.append(handle)
     try:
-        preload(directory="")
+        preload(directory=directory)
     except Exception:
         # Provider validation below produces a concise, actionable error.
         pass
@@ -34,15 +45,28 @@ def assert_gpu_available() -> list[str]:
     providers = available_gpu_providers()
     if "CUDAExecutionProvider" not in providers:
         found = ", ".join(ort.get_available_providers()) or "none"
+        if getattr(sys, "frozen", False):
+            action = (
+                "请确认 NVIDIA 驱动正常，并重新复制完整离线包后运行 GPU诊断.bat。"
+            )
+        else:
+            action = (
+                "请确认 NVIDIA 驱动正常，并重新运行 install.bat 安装 "
+                "onnxruntime-gpu[cuda,cudnn]。"
+            )
         raise GPUUnavailableError(
             "未检测到 ONNX Runtime CUDAExecutionProvider，程序拒绝使用 CPU 推理。\n\n"
             f"当前 provider: {found}\n"
-            "请确认 NVIDIA 驱动正常，并重新运行 install.bat 安装 onnxruntime-gpu[cuda,cudnn]。"
+            f"{action}"
         )
     return providers
 
 
-def create_gpu_session(model_path: str | Path, prefer_tensorrt: bool = False) -> ort.InferenceSession:
+def create_gpu_session(
+    model_path: str | Path,
+    prefer_tensorrt: bool = False,
+    device_id: int = 0,
+) -> ort.InferenceSession:
     available = assert_gpu_available()
     path = str(Path(model_path).resolve())
     provider_config: list[Any] = []
@@ -50,12 +74,13 @@ def create_gpu_session(model_path: str | Path, prefer_tensorrt: bool = False) ->
         cache_dir = str(Path(path).parent / "tensorrt_cache")
         os.makedirs(cache_dir, exist_ok=True)
         provider_config.append(("TensorrtExecutionProvider", {
+            "device_id": device_id,
             "trt_engine_cache_enable": True,
             "trt_engine_cache_path": cache_dir,
             "trt_fp16_enable": True,
         }))
     provider_config.append(("CUDAExecutionProvider", {
-        "device_id": 0,
+        "device_id": device_id,
         "cudnn_conv_algo_search": "EXHAUSTIVE",
         "arena_extend_strategy": "kNextPowerOfTwo",
         "do_copy_in_default_stream": True,

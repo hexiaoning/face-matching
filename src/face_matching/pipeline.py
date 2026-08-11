@@ -96,7 +96,10 @@ class VideoFacePipeline:
                 len(track.embeddings) >= self.config.min_track_embeddings
                 and track.embedding_version != track.matched_embedding_version
             ):
-                aggregate = track.aggregate_embedding()
+                aggregate = track.aggregate_embedding(
+                    self.config.track_top_k,
+                    self.config.track_similarity_floor,
+                )
                 if aggregate is not None:
                     match = self.matcher.match(
                         aggregate, self.match_threshold, self.config.min_margin

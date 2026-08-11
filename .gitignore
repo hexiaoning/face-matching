@@ -7,5 +7,6 @@ htmlcov/
 .models/
 data/
 dist/
+offline_dist/
 build/
 *.egg-info/

@@ -62,10 +62,11 @@ def assert_models_present(config: EngineConfig | None = None) -> None:
     missing = [str(path) for path in required_models(config) if not path.is_file()]
     if missing:
         joined = "\n".join(f"  - {item}" for item in missing)
-        raise ModelMissingError(
-            "缺少人脸模型文件：\n"
-            f"{joined}\n\n请双击 install.bat，或运行 face-matching-download-models。"
-        )
+        if getattr(sys, "frozen", False):
+            action = "离线包不完整，请重新解压或复制整个 FaceMatching 文件夹。"
+        else:
+            action = "请双击 install.bat，或运行 face-matching-download-models。"
+        raise ModelMissingError(f"缺少人脸模型文件：\n{joined}\n\n{action}")
 
 
 def _sha256(path: Path) -> str:
@@ -77,7 +78,7 @@ def _sha256(path: Path) -> str:
 
 
 def _download(spec: DownloadSpec, temp_path: Path, progress: Progress) -> None:
-    request = urllib.request.Request(spec.url, headers={"User-Agent": "FaceMatching/0.1"})
+    request = urllib.request.Request(spec.url, headers={"User-Agent": "FaceMatching/0.2.1"})
     with urllib.request.urlopen(request, timeout=90) as response, temp_path.open("wb") as output:
         total = int(response.headers.get("Content-Length") or spec.size)
         downloaded = 0

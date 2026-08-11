@@ -4,12 +4,51 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from .database import EnrollmentSample
+from .detector import FaceDetection
 from .engine import FaceEngine
 from .errors import EnrollmentError
 from .image_io import read_image
 
 
 ProgressCallback = Callable[[int, int, str], None]
+
+
+def _select_enrollment_face(
+    faces: Sequence[FaceDetection],
+    min_face_size: int,
+    filename: str,
+) -> FaceDetection:
+    if not faces:
+        raise EnrollmentError(f"未检测到人脸：{filename}")
+    ranked = sorted(
+        faces,
+        key=lambda face: (
+            max(0.0, float(face.bbox[2] - face.bbox[0]))
+            * max(0.0, float(face.bbox[3] - face.bbox[1]))
+            * max(float(face.score), 0.0)
+        ),
+        reverse=True,
+    )
+    primary = ranked[0]
+    primary_area = max(
+        float(primary.bbox[2] - primary.bbox[0])
+        * float(primary.bbox[3] - primary.bbox[1]),
+        1.0,
+    )
+    primary_width = float(primary.bbox[2] - primary.bbox[0])
+    primary_height = float(primary.bbox[3] - primary.bbox[1])
+    if min(primary_width, primary_height) < min_face_size:
+        raise EnrollmentError(
+            f"人脸过小：{filename}（{min(primary_width, primary_height):.0f}px）"
+        )
+    # Ignore tiny background detections, but reject a second meaningful face
+    # so the database cannot silently enroll the wrong identity.
+    for face in ranked[1:]:
+        width = float(face.bbox[2] - face.bbox[0])
+        height = float(face.bbox[3] - face.bbox[1])
+        if min(width, height) >= min_face_size and width * height >= primary_area * 0.25:
+            raise EnrollmentError(f"照片包含多张明显人脸：{filename}")
+    return primary
 
 
 def prepare_enrollment_samples(
@@ -26,11 +65,7 @@ def prepare_enrollment_samples(
             progress(index - 1, len(paths), path.name)
         image = read_image(path)
         faces = engine.detect(image)
-        if not faces:
-            raise EnrollmentError(f"未检测到人脸：{path.name}")
-        if len(faces) != 1:
-            raise EnrollmentError(f"照片必须且只能包含一张人脸：{path.name}（检测到 {len(faces)} 张）")
-        face = faces[0]
+        face = _select_enrollment_face(faces, engine.config.min_face_size, path.name)
         quality = float(face.quality.overall) if face.quality else 0.0
         if quality < engine.config.enrollment_min_quality:
             raise EnrollmentError(

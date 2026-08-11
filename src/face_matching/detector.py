@@ -65,39 +65,52 @@ class SCRFDDetector:
         threshold: float = 0.45,
         nms_threshold: float = 0.40,
         prefer_tensorrt: bool = False,
+        device_id: int = 0,
     ) -> None:
-        self.session = create_gpu_session(model_path, prefer_tensorrt)
-        self.input_name = self.session.get_inputs()[0].name
+        self.session = create_gpu_session(model_path, prefer_tensorrt, device_id)
+        input_meta = self.session.get_inputs()[0]
+        self.input_name = input_meta.name
         self.output_names = [output.name for output in self.session.get_outputs()]
-        self.input_size = input_size
+        input_shape = input_meta.shape
+        fixed_height = input_shape[2] if len(input_shape) == 4 else None
+        fixed_width = input_shape[3] if len(input_shape) == 4 else None
+        if (
+            isinstance(fixed_height, int)
+            and isinstance(fixed_width, int)
+            and fixed_height > 0
+            and fixed_width > 0
+        ):
+            self.input_size = (fixed_width, fixed_height)
+        else:
+            self.input_size = input_size
         self.threshold = threshold
         self.nms_threshold = nms_threshold
         output_count = len(self.output_names)
         if output_count in (6, 9):
             self.feature_maps = 3
             self.strides = (8, 16, 32)
-            self.anchors = 2
         elif output_count in (10, 15):
             self.feature_maps = 5
             self.strides = (8, 16, 32, 64, 128)
-            self.anchors = 1
         else:
             raise ValueError(f"Unsupported SCRFD output count: {output_count}")
         self.has_landmarks = output_count in (9, 15)
         if not self.has_landmarks:
             raise ValueError("SCRFD model must include five-point landmarks")
-        self._centers: dict[tuple[int, int, int], np.ndarray] = {}
+        self._centers: dict[tuple[int, int, int, int], np.ndarray] = {}
 
-    def _anchor_centers(self, height: int, width: int, stride: int) -> np.ndarray:
-        key = height, width, stride
+    def _anchor_centers(
+        self, height: int, width: int, stride: int, anchors: int
+    ) -> np.ndarray:
+        key = height, width, stride, anchors
         cached = self._centers.get(key)
         if cached is not None:
             return cached
         grid_x, grid_y = np.meshgrid(np.arange(width), np.arange(height))
         centers = np.stack([grid_x, grid_y], axis=-1).astype(np.float32) * stride
         centers = centers.reshape(-1, 2)
-        if self.anchors > 1:
-            centers = np.repeat(centers, self.anchors, axis=0)
+        if anchors > 1:
+            centers = np.repeat(centers, anchors, axis=0)
         if len(self._centers) < 32:
             self._centers[key] = centers
         return centers
@@ -129,17 +142,22 @@ class SCRFDDetector:
             landmark_distances = (
                 np.asarray(outputs[index + self.feature_maps * 2]).reshape(-1, 10) * stride
             )
-            feature_height = target_height // stride
-            feature_width = target_width // stride
-            centers = self._anchor_centers(feature_height, feature_width, stride)
-            count = min(len(scores), len(box_distances), len(landmark_distances), len(centers))
-            scores = scores[:count]
+            feature_height = (target_height + stride - 1) // stride
+            feature_width = (target_width + stride - 1) // stride
+            locations = feature_height * feature_width
+            if locations <= 0 or len(box_distances) % locations:
+                raise ValueError("SCRFD 输出形状与检测输入不匹配")
+            anchors = len(box_distances) // locations
+            if scores.size == len(box_distances) * 2:
+                scores = scores.reshape(-1, 2)[:, -1]
+            if scores.size != len(box_distances) or len(landmark_distances) != len(box_distances):
+                raise ValueError("SCRFD 分类、边框和关键点输出数量不一致")
+            centers = self._anchor_centers(feature_height, feature_width, stride, anchors)
             positive = np.where(scores >= self.threshold)[0]
             if not len(positive):
                 continue
-            centers = centers[:count]
-            boxes = distance_to_bbox(centers, box_distances[:count])[positive]
-            landmarks = distance_to_landmarks(centers, landmark_distances[:count])[positive]
+            boxes = distance_to_bbox(centers, box_distances)[positive]
+            landmarks = distance_to_landmarks(centers, landmark_distances)[positive]
             all_scores.append(scores[positive])
             all_boxes.append(boxes)
             all_landmarks.append(landmarks)
@@ -147,8 +165,14 @@ class SCRFDDetector:
         if not all_scores:
             return []
         scores = np.concatenate(all_scores).astype(np.float32)
-        boxes = np.concatenate(all_boxes).astype(np.float32) / scale
-        landmarks = np.concatenate(all_landmarks).astype(np.float32).reshape(-1, 5, 2) / scale
+        boxes = np.concatenate(all_boxes).astype(np.float32)
+        landmarks = np.concatenate(all_landmarks).astype(np.float32).reshape(-1, 5, 2)
+        scale_x = resized_width / image_width
+        scale_y = resized_height / image_height
+        boxes[:, 0::2] /= scale_x
+        boxes[:, 1::2] /= scale_y
+        landmarks[:, :, 0] /= scale_x
+        landmarks[:, :, 1] /= scale_y
         boxes[:, 0::2] = np.clip(boxes[:, 0::2], 0, image_width - 1)
         boxes[:, 1::2] = np.clip(boxes[:, 1::2], 0, image_height - 1)
         landmarks[:, :, 0] = np.clip(landmarks[:, :, 0], 0, image_width - 1)

@@ -38,18 +38,20 @@ def collect() -> dict[str, object]:
     return result
 
 
+def exit_code(result: dict[str, object]) -> int:
+    if not all(result["models"].values()):
+        return 2
+    if not result["gpu_ready"] or not result["inference_ready"]:
+        return 3
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Face matching installation diagnostics")
     parser.parse_args(argv)
     result = collect()
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    models_ok = all(result["models"].values())
-    gpu_ok = bool(result["gpu_ready"])
-    if not models_ok:
-        return 2
-    if not gpu_ok or not result["inference_ready"]:
-        return 3
-    return 0
+    return exit_code(result)
 
 
 if __name__ == "__main__":
