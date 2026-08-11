@@ -19,6 +19,91 @@ class MatchResult:
     margin: float
 
 
+@dataclass(frozen=True, slots=True)
+class TargetMatchResult:
+    """Evidence-backed result for one target versus one video track."""
+
+    decision: str
+    score: float
+    best_score: float
+    support: int
+    observations: int
+
+    @property
+    def accepted(self) -> bool:
+        return self.decision == "confirmed"
+
+    @property
+    def review(self) -> bool:
+        return self.decision == "review"
+
+
+class TargetMatcher:
+    """One-to-one target search using multiple reference and track views.
+
+    This intentionally differs from gallery identification: there is no
+    first/second identity margin.  A track is confirmed only when multiple
+    independently embedded frames support it, while weaker tracks remain
+    visible for human review instead of being discarded as "unknown".
+    """
+
+    def __init__(
+        self,
+        references: list[np.ndarray],
+        threshold: float = 0.19,
+        review_threshold: float = 0.12,
+        min_support: int = 2,
+        top_k: int = 3,
+    ) -> None:
+        if not references:
+            raise ValueError("目标人物至少需要一个人脸特征")
+        if review_threshold >= threshold:
+            raise ValueError("候选复核阈值必须低于目标确认阈值")
+        self.reference_matrix = np.vstack([l2_normalize(item) for item in references]).astype(
+            np.float32
+        )
+        self.threshold = float(threshold)
+        self.review_threshold = float(review_threshold)
+        self.min_support = max(1, int(min_support))
+        self.top_k = max(1, int(top_k))
+
+    def match(
+        self,
+        observations: list[tuple[np.ndarray | tuple[np.ndarray, ...], float]],
+    ) -> TargetMatchResult:
+        if not observations:
+            return TargetMatchResult("collecting", 0.0, 0.0, 0, 0)
+        qualities = np.asarray(
+            [max(float(item[1]), 0.05) for item in observations], dtype=np.float32
+        )
+        # A reference alignment set absorbs small landmark errors.  Each
+        # video frame contributes only its best alignment/reference pair, so
+        # alignment augmentation cannot fake the multi-frame support count.
+        frame_scores: list[float] = []
+        for embeddings, _ in observations:
+            values = embeddings if isinstance(embeddings, tuple) else (embeddings,)
+            matrix = np.vstack([l2_normalize(value) for value in values]).astype(np.float32)
+            if matrix.shape[1] != self.reference_matrix.shape[1]:
+                raise ValueError("目标照片与视频人脸的特征维度不一致")
+            frame_scores.append(float(np.max(matrix @ self.reference_matrix.T)))
+        per_observation = np.asarray(frame_scores, dtype=np.float32)
+        count = min(self.top_k, len(per_observation))
+        selected = np.argsort(per_observation)[::-1][:count]
+        top_scores = per_observation[selected]
+        top_qualities = qualities[selected]
+        best_score = float(top_scores[0])
+        mean_score = float(np.average(top_scores, weights=top_qualities**2))
+        score = 0.70 * best_score + 0.30 * mean_score
+        support = int(np.count_nonzero(per_observation >= self.threshold))
+        if best_score >= self.threshold and support >= self.min_support:
+            decision = "confirmed"
+        elif best_score >= self.review_threshold:
+            decision = "review"
+        else:
+            decision = "collecting"
+        return TargetMatchResult(decision, score, best_score, support, len(observations))
+
+
 @dataclass(slots=True)
 class _Identity:
     person_id: str

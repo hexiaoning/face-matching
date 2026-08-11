@@ -8,7 +8,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if (-not $ReleaseDirectory) {
-    $ReleaseDirectory = Join-Path $ProjectRoot "dist\FaceMatching-v2.4.0-windows-x64"
+    $ReleaseDirectory = Join-Path $ProjectRoot "dist\FaceMatching-v3.1.0-windows-x64"
 }
 if (-not $OutputDirectory) {
     $OutputDirectory = Join-Path $ProjectRoot "dist"
@@ -40,7 +40,7 @@ finally {
     Remove-Item Env:FACE_MATCHING_INSTALLER_SOURCE -ErrorAction SilentlyContinue
     Remove-Item Env:FACE_MATCHING_INSTALLER_OUTPUT -ErrorAction SilentlyContinue
 }
-$Installer = Join-Path $OutputDirectory "FaceMatching-v2.4.0-Setup.exe"
+$Installer = Join-Path $OutputDirectory "FaceMatching-v3.1.0-Setup.exe"
 if (-not (Test-Path -LiteralPath $Installer -PathType Leaf)) {
     throw "Installer was not created: $Installer"
 }

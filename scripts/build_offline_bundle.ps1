@@ -14,7 +14,7 @@ $BuildEnvironment = Join-Path $ProjectRoot ".build-venv"
 $BuildPython = Join-Path $BuildEnvironment "Scripts\python.exe"
 $ModelRoot = Join-Path $ProjectRoot ".build-assets\models"
 $ReleaseRoot = Join-Path $ProjectRoot "dist"
-$ReleaseName = "FaceMatching-v2.4.0-windows-x64"
+$ReleaseName = "FaceMatching-v3.1.0-windows-x64"
 $ReleaseDirectory = Join-Path $ReleaseRoot $ReleaseName
 $Archive = Join-Path $ReleaseRoot ($ReleaseName + ".zip")
 

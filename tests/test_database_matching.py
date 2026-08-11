@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from face_matching.database import FaceDatabase, FaceSampleInput
-from face_matching.matching import GalleryMatcher
+from face_matching.matching import GalleryMatcher, TargetMatcher
 from face_matching.models import feature_model_id
 
 
@@ -103,3 +103,62 @@ def test_internal_event_log_preserves_video_source_verbatim(tmp_path):
     with database._connect() as connection:
         stored = connection.execute("SELECT source FROM recognition_events").fetchone()["source"]
     assert stored == source
+
+
+def test_target_matcher_requires_multiple_video_frames_not_alignment_variants():
+    reference = unit(1.0, 0.0, 0.0)
+    matcher = TargetMatcher(
+        [reference], threshold=0.75, review_threshold=0.40, min_support=2
+    )
+    strong = unit(0.9, 0.1, 0.0)
+    alternate = unit(0.85, 0.15, 0.0)
+
+    one_frame = matcher.match([((strong, alternate), 0.8)])
+    assert one_frame.decision == "review"
+    assert one_frame.support == 1
+
+    two_frames = matcher.match([((strong, alternate), 0.8), ((strong,), 0.7)])
+    assert two_frames.accepted is True
+    assert two_frames.support == 2
+
+
+def test_target_matcher_keeps_weak_but_relevant_track_for_review():
+    matcher = TargetMatcher(
+        [unit(1.0, 0.0)], threshold=0.80, review_threshold=0.30, min_support=2
+    )
+
+    result = matcher.match([((unit(0.5, 0.5),), 0.6)])
+
+    assert result.review is True
+    assert result.accepted is False
+
+
+def test_target_matcher_confirms_repeated_low_cross_quality_score():
+    reference = unit(1.0, 0.0)
+    difficult = unit(0.195, np.sqrt(1.0 - 0.195**2))
+    matcher = TargetMatcher(
+        [reference], threshold=0.19, review_threshold=0.12, min_support=2
+    )
+
+    first = matcher.match([(difficult, 0.7)])
+    confirmed = matcher.match([(difficult, 0.7), (difficult, 0.6)])
+
+    assert first.decision == "review"
+    assert confirmed.accepted is True
+    assert confirmed.support == 2
+    assert confirmed.best_score == pytest.approx(0.195)
+
+
+def test_target_matcher_does_not_confirm_one_spurious_high_frame():
+    reference = unit(1.0, 0.0)
+    high = unit(0.35, np.sqrt(1.0 - 0.35**2))
+    low = unit(0.05, np.sqrt(1.0 - 0.05**2))
+    matcher = TargetMatcher(
+        [reference], threshold=0.19, review_threshold=0.12, min_support=2
+    )
+
+    result = matcher.match([(high, 0.8), (low, 0.9), (low, 0.7)])
+
+    assert result.accepted is False
+    assert result.decision == "review"
+    assert result.support == 1
