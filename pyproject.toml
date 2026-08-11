@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "face-matching"
+version = "0.1.0"
+description = "GPU-only desktop video face matching for Windows"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+  "numpy>=1.26,<3",
+  "opencv-python-headless>=4.10,<5",
+  "PySide6>=6.8,<7",
+  "onnxruntime-gpu[cuda,cudnn]>=1.24,<1.27",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "pytest-cov>=6"]
+
+[project.scripts]
+face-matching = "face_matching.__main__:main"
+face-matching-models = "face_matching.models:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

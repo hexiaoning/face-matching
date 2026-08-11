@@ -1,0 +1,80 @@
+import sqlite3
+
+import numpy as np
+import pytest
+
+from face_matching.database import FaceDatabase, FaceSampleInput
+from face_matching.matching import GalleryMatcher
+
+
+def unit(*values: float) -> np.ndarray:
+    vector = np.asarray(values, dtype=np.float32)
+    return vector / np.linalg.norm(vector)
+
+
+def sample(path: str, embedding: np.ndarray, model: str = "model-a", quality: float = 0.8):
+    return FaceSampleInput(path, embedding, model, quality)
+
+
+def test_database_crud_gallery_and_unique_id_card(tmp_path):
+    database = FaceDatabase(tmp_path / "faces.db")
+    alice_id = database.add_person(
+        "Alice", "ID-001", [sample("alice-1.jpg", unit(1, 0, 0))]
+    )
+    database.add_samples(alice_id, [sample("alice-2.jpg", unit(0.98, 0.02, 0), quality=0.6)])
+
+    record = database.get_person(alice_id)
+    assert record is not None
+    assert record.photo_count == 2
+    assert database.list_gallery("other-model") == []
+    assert len(database.list_gallery("model-a")) == 2
+
+    database.update_person(alice_id, "Alice Zhang", "ID-001-A")
+    assert database.get_person(alice_id).name == "Alice Zhang"
+    bob_id = database.add_person(
+        "Bob", "ID-002", [sample("bob.jpg", unit(0, 1, 0), model="model-b")]
+    )
+    with pytest.raises(ValueError, match="已经存在"):
+        database.update_person(bob_id, "Bob", "ID-001-A")
+    with pytest.raises(sqlite3.IntegrityError):
+        database.add_person("Duplicate", "ID-001-A", [sample("dup.jpg", unit(0, 1, 0))])
+
+    paths = database.delete_person(alice_id)
+    assert set(paths) == {"alice-1.jpg", "alice-2.jpg"}
+    assert database.get_person(alice_id) is None
+    assert database.list_gallery("model-a") == []
+
+
+def test_matcher_uses_multi_photo_templates_and_open_set_margin(tmp_path):
+    database = FaceDatabase(tmp_path / "faces.db")
+    alice = database.add_person(
+        "Alice",
+        "A",
+        [
+            sample("a1", unit(1.0, 0.0, 0.0), quality=1.0),
+            sample("a2", unit(0.9, 0.1, 0.0), quality=0.7),
+        ],
+    )
+    database.add_person("Bob", "B", [sample("b1", unit(0.0, 1.0, 0.0))])
+    matcher = GalleryMatcher(database, "model-a", threshold=0.55, min_margin=0.08)
+
+    accepted = matcher.match(unit(0.98, 0.02, 0.0))
+    assert accepted.accepted is True
+    assert accepted.person_id == alice
+    assert accepted.name == "Alice"
+    assert accepted.margin > 0.08
+
+    ambiguous = matcher.match(unit(0.7, 0.7, 0.0))
+    assert ambiguous.accepted is False
+    assert ambiguous.person_id is None
+    assert ambiguous.name == "陌生人"
+
+
+def test_corrupt_embedding_row_is_not_loaded(tmp_path):
+    database = FaceDatabase(tmp_path / "faces.db")
+    person_id = database.add_person("Alice", "A", [sample("a", unit(1, 0))])
+    with database._connect() as connection:
+        connection.execute(
+            "UPDATE face_samples SET embedding_dim=999 WHERE person_id=?", (person_id,)
+        )
+    assert database.list_gallery("model-a") == []
