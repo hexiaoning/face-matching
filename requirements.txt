@@ -1,0 +1,21 @@
+# 推理引擎（GPU 版，CUDA 12.x）
+onnxruntime-gpu==1.19.2
+
+# Windows 下一键集成的 CUDA/cuDNN 运行库（无需安装 CUDA 工具包）
+nvidia-cuda-runtime-cu12; platform_system == "Windows"
+nvidia-cublas-cu12; platform_system == "Windows"
+nvidia-cudnn-cu12; platform_system == "Windows"
+nvidia-cufft-cu12; platform_system == "Windows"
+nvidia-curand-cu12; platform_system == "Windows"
+
+# 人脸检测 + 识别模型（SCRFD + GlintR100）
+insightface==0.7.3
+onnx>=1.15
+
+# 视频读取与图像处理
+opencv-python>=4.8
+numpy>=1.26
+Pillow>=10.0
+
+# 图形界面
+PyQt6>=6.5
