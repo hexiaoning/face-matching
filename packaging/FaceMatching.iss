@@ -1,5 +1,5 @@
 #define MyAppName "Face Matching"
-#define MyAppVersion "2.4.0"
+#define MyAppVersion "3.3.0"
 #define MyAppPublisher "Face Matching"
 #define MyAppExeName "FaceMatching.exe"
 #define SourceDir GetEnv("FACE_MATCHING_INSTALLER_SOURCE")

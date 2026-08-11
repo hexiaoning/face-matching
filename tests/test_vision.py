@@ -4,7 +4,14 @@ import numpy as np
 import pytest
 
 from face_matching.matching import MatchResult
-from face_matching.vision.detector import distance_to_bbox, distance_to_landmarks, nms
+from face_matching.vision.alignment import align_face_variants
+from face_matching.vision.detector import (
+    Detection,
+    SCRFDDetector,
+    distance_to_bbox,
+    distance_to_landmarks,
+    nms,
+)
 from face_matching.vision.recognizer import FaceEmbedder, l2_normalize
 from face_matching.vision.tracker import FaceTracker, Observation, bbox_iou, robust_aggregate
 
@@ -69,6 +76,46 @@ def test_detector_geometry_and_nms():
         dtype=np.float32,
     )
     assert nms(boxes, 0.4) == [0, 2]
+
+
+def test_reference_detection_maps_padded_portrait_back_to_original():
+    class ContextDetector(SCRFDDetector):
+        def __init__(self):
+            self.threshold = 0.4
+            self.nms_threshold = 0.4
+
+        def detect(self, image, max_faces=100, threshold=None):
+            if image.shape[:2] != (150, 130):
+                return []
+            landmarks = np.asarray(
+                [[45, 50], [75, 50], [60, 65], [48, 82], [72, 82]],
+                dtype=np.float32,
+            )
+            return [
+                Detection(
+                    np.asarray([35, 35, 95, 105], dtype=np.float32),
+                    0.8,
+                    landmarks,
+                )
+            ]
+
+    detections = ContextDetector().detect_reference(np.zeros((100, 80, 3), np.uint8))
+
+    assert len(detections) == 1
+    assert np.allclose(detections[0].bbox, [10, 10, 70, 80])
+    assert np.allclose(detections[0].landmarks[0], [20, 25])
+
+
+def test_reference_alignment_builds_deterministic_landmark_variants():
+    image = np.full((140, 140, 3), 127, dtype=np.uint8)
+    landmarks = np.asarray(
+        [[38, 52], [74, 52], [56, 72], [42, 92], [71, 92]], dtype=np.float32
+    )
+
+    variants = align_face_variants(image, landmarks)
+
+    assert len(variants) == 3
+    assert all(item.shape == (112, 112, 3) for item in variants)
 
 
 def test_tracker_aggregates_quality_and_requires_match_consensus():

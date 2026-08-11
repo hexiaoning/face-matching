@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..matching import MatchResult
+from ..matching import MatchResult, TargetMatchResult
 from .recognizer import l2_normalize
 
 
@@ -49,6 +49,7 @@ class Observation:
     detection_score: float
     embedding: np.ndarray | None
     quality: float
+    alternate_embeddings: tuple[np.ndarray, ...] = ()
 
 
 @dataclass(slots=True)
@@ -59,6 +60,7 @@ class Track:
     misses: int = 0
     velocity: np.ndarray = field(default_factory=lambda: np.zeros(4, dtype=np.float32))
     observations: list[tuple[np.ndarray, float]] = field(default_factory=list)
+    target_observations: list[tuple[tuple[np.ndarray, ...], float]] = field(default_factory=list)
     last_embedding: np.ndarray | None = None
     name: str = "采集中"
     person_id: str | None = None
@@ -71,6 +73,9 @@ class Track:
     candidate_id: str | None = None
     candidate_count: int = 0
     unknown_count: int = 0
+    decision: str = "collecting"
+    support: int = 0
+    best_score: float = 0.0
 
     def add(self, observation: Observation, frame_index: int) -> None:
         new_bbox = np.asarray(observation.bbox, dtype=np.float32)
@@ -82,10 +87,20 @@ class Track:
         if observation.embedding is not None:
             embedding = l2_normalize(observation.embedding)
             self.observations.append((embedding, float(observation.quality)))
+            variants = (embedding,) + tuple(
+                l2_normalize(item) for item in observation.alternate_embeddings
+            )
+            self.target_observations.append((variants, float(observation.quality)))
             self.last_embedding = embedding
+            self.quality = max(self.quality, float(observation.quality))
             self.embedding_version += 1
             if len(self.observations) > 32:
                 self.observations = sorted(self.observations, key=lambda item: item[1], reverse=True)[:24]
+                self.target_observations = sorted(
+                    self.target_observations,
+                    key=lambda item: item[1],
+                    reverse=True,
+                )[:24]
 
     def predict(self) -> np.ndarray:
         horizon = 1.0 + 0.25 * min(self.misses, 2)
@@ -131,6 +146,27 @@ class Track:
                 self.person_id = None
                 self.id_card = ""
 
+    def apply_target_match(self, match: TargetMatchResult, target_name: str) -> None:
+        if self.matched_embedding_version == self.embedding_version:
+            return
+        self.matched_embedding_version = self.embedding_version
+        self.score = match.score
+        self.best_score = match.best_score
+        self.support = match.support
+        self.decision = match.decision
+        if match.accepted:
+            self.name = target_name
+            self.person_id = "__search_target__"
+            self.id_card = ""
+        elif match.review:
+            self.name = "待复核"
+            self.person_id = None
+            self.id_card = ""
+        else:
+            self.name = "采集中"
+            self.person_id = None
+            self.id_card = ""
+
     def invalidate_identity(self) -> None:
         self.name = "采集中"
         self.person_id = None
@@ -140,6 +176,9 @@ class Track:
         self.candidate_id = None
         self.candidate_count = 0
         self.unknown_count = 0
+        self.decision = "collecting"
+        self.support = 0
+        self.best_score = 0.0
         self.matched_embedding_version = -1
 
 

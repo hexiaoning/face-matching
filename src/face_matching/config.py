@@ -18,6 +18,11 @@ class AppConfig:
     nms_threshold: float = 0.40
     match_threshold: float = 0.45
     match_margin: float = 0.06
+    # One-to-one search can use a lower per-frame threshold than 1:N gallery
+    # identification because confirmation also requires independent frames.
+    target_match_threshold: float = 0.19
+    target_review_threshold: float = 0.12
+    target_min_support: int = 2
     min_face_size: int = 32
     min_quality: float = 0.22
     enrollment_min_quality: float = 0.30
@@ -28,6 +33,7 @@ class AppConfig:
     track_max_misses: int = 12
     track_consistency_threshold: float = 0.12
     confirmation_matches: int = 2
+    fast_file_scan: bool = True
 
     def validate(self) -> "AppConfig":
         if self.model_profile not in {"lvface-b", "auraface"}:
@@ -42,6 +48,8 @@ class AppConfig:
             "detector_threshold",
             "nms_threshold",
             "match_threshold",
+            "target_match_threshold",
+            "target_review_threshold",
             "min_quality",
             "enrollment_min_quality",
             "track_consistency_threshold",
@@ -51,6 +59,8 @@ class AppConfig:
                 raise ValueError(f"{name} 必须在 0 到 1 之间")
         if not 0.0 <= self.match_margin <= 0.5:
             raise ValueError("match_margin 必须在 0 到 0.5 之间")
+        if self.target_review_threshold >= self.target_match_threshold:
+            raise ValueError("候选复核阈值必须低于目标确认阈值")
         if self.min_face_size < 12:
             raise ValueError("最小人脸尺寸不能小于 12 像素")
         if self.frame_interval < 1:
@@ -61,6 +71,10 @@ class AppConfig:
             raise ValueError("轨迹参数必须大于 0")
         if self.track_max_misses < 1 or self.confirmation_matches < 1:
             raise ValueError("轨迹保留和确认次数必须大于 0")
+        if self.target_min_support < 1:
+            raise ValueError("目标确认支持帧数必须大于 0")
+        if not isinstance(self.fast_file_scan, bool):
+            raise ValueError("fast_file_scan 必须是布尔值")
         return self
 
     @property
