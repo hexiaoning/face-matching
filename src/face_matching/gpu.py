@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.metadata
+import json
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -244,12 +246,90 @@ class OpenVINOInferenceSession:
         ]
 
 
+_CPU_SHAPE_OPS = frozenset({
+    "Shape", "Size", "Gather", "GatherElements", "Slice", "Concat",
+    "Unsqueeze", "Squeeze", "Reshape", "Cast", "Identity",
+    "Add", "Sub", "Mul", "Div", "Mod", "Min", "Max", "Equal", "Where",
+})
+
+
+def _small_integer_tensors(metadata: object) -> bool:
+    """Shape helpers may manipulate small integer/bool tensors, never features."""
+    if not isinstance(metadata, list) or not metadata:
+        return False
+    for tensor in metadata:
+        if not isinstance(tensor, dict) or len(tensor) != 1:
+            return False
+        dtype, shape = next(iter(tensor.items()))
+        if dtype not in {"int32", "int64", "bool"} or not isinstance(shape, list):
+            return False
+        size = 1
+        for dimension in shape:
+            if not isinstance(dimension, int) or dimension < 0:
+                return False
+            size *= dimension
+        if size > 64:
+            return False
+    return True
+
+
+def _check_cuda_profile(events: list[dict[str, Any]]) -> None:
+    """Require real CUDA kernels and permit only CPU shape bookkeeping."""
+    cuda_nodes = 0
+    for event in events:
+        if event.get("cat") != "Node":
+            continue
+        args = event.get("args", {})
+        provider = args.get("provider")
+        # ORT also records scheduling/fence events without a kernel provider.
+        if not provider:
+            if args.get("op_name") or event.get("name", "").endswith("_kernel_time"):
+                raise GPUUnavailableError("模型计算节点缺少执行后端记录，无法确认 GPU 推理。")
+            continue
+        op = args.get("op_name", "")
+        if provider == "CUDAExecutionProvider":
+            if op and op not in {"MemcpyFromHost", "MemcpyToHost"}:
+                cuda_nodes += 1
+            continue
+        if (
+            provider == "CPUExecutionProvider"
+            and op in _CPU_SHAPE_OPS
+            and _small_integer_tensors(args.get("output_type_shape"))
+            and (op in {"Shape", "Size"} or _small_integer_tensors(args.get("input_type_shape")))
+        ):
+            continue
+        raise GPUUnavailableError(
+            f"模型计算节点未在 CUDA GPU 上执行: {event.get('name', op)} "
+            f"({op}, {provider})；仅允许 CPU 处理张量形状。"
+        )
+    if not cuda_nodes:
+        raise GPUUnavailableError("模型自检未发现真实 CUDA 计算节点，拒绝使用 CPU 推理。")
+
+
+def _verify_cuda_execution(session: Any) -> None:
+    inputs = session.get_inputs()
+    if len(inputs) != 1 or len(inputs[0].shape) != 4 or inputs[0].type != "tensor(float)":
+        raise GPUUnavailableError("人脸模型必须只有一个 NCHW float32 输入")
+    shape = [
+        value if isinstance(value, int) and value > 0 else (1, 3, 640, 640)[index]
+        for index, value in enumerate(inputs[0].shape)
+    ]
+    outputs = session.run(None, {inputs[0].name: np.zeros(shape, dtype=np.float32)})
+    if not outputs or any(not np.isfinite(output).all() for output in outputs):
+        raise GPUUnavailableError("CUDA 模型自检没有返回有效输出")
+    profile = Path(session.end_profiling())
+    _check_cuda_profile(json.loads(profile.read_text(encoding="utf-8")))
+
+
 def _create_cuda_session(model_path: Path, device_id: int = 0) -> Any:
     assert_cuda_available()
     ort = _load_ort()
     options = ort.SessionOptions()
     options.log_severity_level = 3
-    options.add_session_config_entry("session.disable_cpu_ep_fallback", "1")
+    # ORT deliberately places shape subgraphs on CPU. Rejecting every CPU node
+    # prevents SCRFD from loading even when its neural network uses CUDA.
+    # Audit an actual inference below instead of accepting CPU model execution.
+    options.enable_profiling = True
     provider_options = {
         "device_id": str(device_id),
         "arena_extend_strategy": "kNextPowerOfTwo",
@@ -258,18 +338,31 @@ def _create_cuda_session(model_path: Path, device_id: int = 0) -> Any:
         "use_tf32": "1",
     }
     try:
-        session = ort.InferenceSession(
-            str(model_path),
-            sess_options=options,
-            providers=[("CUDAExecutionProvider", provider_options)],
-        )
+        with tempfile.TemporaryDirectory(prefix="face-matching-cuda-") as directory:
+            options.profile_file_prefix = str(Path(directory) / "execution")
+            session = None
+            try:
+                session = ort.InferenceSession(
+                    str(model_path),
+                    sess_options=options,
+                    providers=[("CUDAExecutionProvider", provider_options)],
+                    enable_fallback=False,
+                )
+                session.disable_fallback()
+                providers = session.get_providers()
+                if not providers or providers[0] != "CUDAExecutionProvider":
+                    raise GPUUnavailableError(f"{model_path.name} 未使用 CUDAExecutionProvider")
+                _verify_cuda_execution(session)
+            finally:
+                if session is not None:
+                    # Also flush on failures so Windows can remove the temporary
+                    # profile. Profiling stays disabled during normal inference.
+                    session.end_profiling()
     except Exception as exc:
         raise GPUUnavailableError(
-            f"模型无法在 CUDA GPU {device_id} 上完整加载（不会回退 CPU）: "
+            f"模型无法在 CUDA GPU {device_id} 上加载并通过推理校验: "
             f"{model_path.name}\n{exc}"
         ) from exc
-    if not session.get_providers() or session.get_providers()[0] != "CUDAExecutionProvider":
-        raise GPUUnavailableError(f"{model_path.name} 未使用 CUDAExecutionProvider")
     return session
 
 

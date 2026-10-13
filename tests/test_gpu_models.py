@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -24,6 +26,14 @@ class FakeOrt:
     def __init__(self):
         self.options = None
         self.providers = None
+        self.enable_fallback = None
+        self.fallback_disabled = False
+        self.active_providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        self.events = [
+            kernel("Shape", "CPUExecutionProvider", outputs=[{"int64": [4]}]),
+            kernel("Gather", "CPUExecutionProvider", inputs=[{"int64": [4]}, {"int64": []}], outputs=[{"int64": []}]),
+            kernel("Conv", "CUDAExecutionProvider"),
+        ]
 
     def get_available_providers(self):
         return ["CUDAExecutionProvider", "CPUExecutionProvider"]
@@ -32,9 +42,36 @@ class FakeOrt:
         self.options = FakeOptions()
         return self.options
 
-    def InferenceSession(self, path, sess_options, providers):
+    def InferenceSession(self, path, sess_options, providers, enable_fallback):
         self.providers = providers
-        return SimpleNamespace(get_providers=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"])
+        self.enable_fallback = enable_fallback
+        self.profile = Path(sess_options.profile_file_prefix + ".json")
+        return self
+
+    def disable_fallback(self):
+        self.fallback_disabled = True
+
+    def get_providers(self):
+        return self.active_providers
+
+    def get_inputs(self):
+        return [SimpleNamespace(name="input", shape=[1, 3, "height", "width"], type="tensor(float)")]
+
+    def run(self, output_names, inputs):
+        assert inputs["input"].shape == (1, 3, 640, 640)
+        return [np.ones((1, 4), dtype=np.float32)]
+
+    def end_profiling(self):
+        self.profile.write_text(json.dumps(self.events), encoding="utf-8")
+        return str(self.profile)
+
+
+def kernel(op, provider, inputs=None, outputs=None):
+    return {
+        "cat": "Node", "name": f"{op}_kernel_time",
+        "args": {"op_name": op, "provider": provider,
+                 "input_type_shape": inputs, "output_type_shape": outputs},
+    }
 
 
 def test_gpu_package_is_a_hard_requirement(monkeypatch):
@@ -50,14 +87,17 @@ def test_gpu_package_is_a_hard_requirement(monkeypatch):
         gpu.assert_cuda_available()
 
 
-def test_session_disables_cpu_execution_fallback(monkeypatch, tmp_path):
+def test_session_allows_cpu_shape_helpers_and_requires_cuda_inference(monkeypatch, tmp_path):
     runtime = FakeOrt()
     monkeypatch.setattr(gpu, "_load_ort", lambda: runtime)
     monkeypatch.setattr(gpu, "assert_cuda_available", lambda: "CUDA test")
     session = gpu.create_gpu_session(tmp_path / "model.onnx", device_id=2)
 
     assert session.get_providers()[0] == "CUDAExecutionProvider"
-    assert runtime.options.entries["session.disable_cpu_ep_fallback"] == "1"
+    assert "session.disable_cpu_ep_fallback" not in runtime.options.entries
+    assert runtime.enable_fallback is False
+    assert runtime.fallback_disabled
+    assert not runtime.profile.exists()
     assert runtime.providers == [
         (
             "CUDAExecutionProvider",
@@ -70,6 +110,59 @@ def test_session_disables_cpu_execution_fallback(monkeypatch, tmp_path):
             },
         )
     ]
+
+
+@pytest.mark.parametrize("event", [
+    kernel("Conv", "CPUExecutionProvider"),
+    kernel("MatMul", "CPUExecutionProvider"),
+    kernel("Gather", "CPUExecutionProvider", inputs=[{"float": [1, 4]}], outputs=[{"float": [1, 4]}]),
+    kernel("Gather", "CPUExecutionProvider", inputs=[{"int64": [128]}], outputs=[{"int64": [128]}]),
+    kernel("Gather", "CPUExecutionProvider"),
+    kernel("Conv", "OtherProvider"),
+    kernel("Conv", None),
+])
+def test_profile_rejects_cpu_computation_and_unverified_helpers(event):
+    with pytest.raises(GPUUnavailableError, match="计算节点"):
+        gpu._check_cuda_profile([kernel("Conv", "CUDAExecutionProvider"), event])
+
+
+@pytest.mark.parametrize("events", [
+    [],
+    [kernel("MemcpyFromHost", "CUDAExecutionProvider")],
+    [kernel("Shape", "CPUExecutionProvider", outputs=[{"int64": [4]}])],
+    [{"cat": "Session", "name": "model_run"}],
+])
+def test_profile_requires_real_cuda_compute(events):
+    with pytest.raises(GPUUnavailableError, match="真实 CUDA"):
+        gpu._check_cuda_profile(events)
+
+
+def test_profile_accepts_scrfd_shape_subgraph_and_ignores_fences():
+    gpu._check_cuda_profile([
+        {"cat": "Node", "name": "shape_fence_before", "args": {}},
+        kernel("Shape", "CPUExecutionProvider", inputs=[{"float": [1, 56, 40, 40]}], outputs=[{"int64": [4]}]),
+        kernel("Slice", "CPUExecutionProvider", inputs=[{"int64": [4]}, {"int64": [1]}], outputs=[{"int64": [2]}]),
+        kernel("Unsqueeze", "CPUExecutionProvider", inputs=[{"int64": []}], outputs=[{"int64": [1]}]),
+        kernel("Concat", "CPUExecutionProvider", inputs=[{"int64": [2]}, {"int64": [1]}], outputs=[{"int64": [3]}]),
+        kernel("Conv", "CUDAExecutionProvider"),
+    ])
+
+
+@pytest.mark.parametrize("providers, events", [
+    (["CPUExecutionProvider"], [kernel("Conv", "CUDAExecutionProvider")]),
+    (["CUDAExecutionProvider", "CPUExecutionProvider"], [kernel("Conv", "CPUExecutionProvider")]),
+])
+def test_session_rejects_cpu_execution_and_cleans_profile(monkeypatch, tmp_path, providers, events):
+    runtime = FakeOrt()
+    runtime.active_providers = providers
+    runtime.events = events
+    monkeypatch.setattr(gpu, "_load_ort", lambda: runtime)
+    monkeypatch.setattr(gpu, "assert_cuda_available", lambda: "CUDA test")
+
+    with pytest.raises(GPUUnavailableError):
+        gpu.create_gpu_session(tmp_path / "model.onnx")
+
+    assert not runtime.profile.exists()
 
 
 def test_auto_backend_prefers_cuda_then_falls_back_to_openvino(monkeypatch):

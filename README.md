@@ -4,6 +4,8 @@ Windows 11 桌面端监控视频人脸识别。人员库保存“姓名 + 身份
 
 > 这是 **GPU-only** 应用。NVIDIA 使用 ONNX Runtime CUDA，Intel 核显/Arc 使用 OpenVINO GPU FP32；两种后端都禁止神经网络回退 CPU。`auto` 优先 CUDA，再选 OpenVINO。视频解码、跟踪管理、SQLite 和 GUI 等非神经网络工作仍由 CPU 执行。
 
+CUDA 启动时执行真实推理并检查节点执行记录，要求存在 CUDA 计算节点；只允许少量整数/布尔张量的形状辅助操作在 CPU 上运行，卷积、矩阵乘法和浮点特征计算落到 CPU 时仍会拒绝启动。这兼容 ONNX Runtime 默认的形状节点调度，避免 SCRFD 在正常 CUDA 环境中因 `session.disable_cpu_ep_fallback` 而无法加载。
+
 > 这是部署在受控环境中的**内部系统，不需要脱敏功能**。程序不遮罩身份证号，也不清理视频源地址中的用户名或密码；人员表、识别结果和事件日志均保留并显示完整原始值。部署方应通过内部账号权限、主机访问控制和磁盘加密保护这些数据。
 
 ## 方案

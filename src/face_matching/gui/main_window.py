@@ -291,8 +291,8 @@ class MainWindow(QMainWindow):
                 self._download_models()
             self.engine = FaceEngine(self.config, self.database)
             self.enrollment = EnrollmentService(self.database, self.engine)
-            self.statusBar().showMessage(f"{gpu_status} · CPU fallback 已禁用")
-            self.gpu_label.setText(f"✅ {gpu_status}\nCPU fallback：已禁用")
+            self.statusBar().showMessage(f"{gpu_status} · 神经网络使用 GPU 推理")
+            self.gpu_label.setText(f"✅ {gpu_status}\n神经网络：GPU 推理")
             self.model_label.setText(
                 f"✅ {profile_spec(self.config.model_profile).title}\n"
                 f"特征版本：{self.engine.model_id}"
