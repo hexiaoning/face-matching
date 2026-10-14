@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .. import __version__
 from ..config import AppConfig
 from ..database import FaceDatabase, PersonRecord
 from ..engine import FaceEngine, FrameResult
@@ -255,7 +256,7 @@ class MainWindow(QMainWindow):
         self.enrollment: EnrollmentService | None = None
         self.worker: VideoWorker | None = None
         self.video_matches = VideoMatchList()
-        self.setWindowTitle("Face Matching · GPU 视频人脸比对")
+        self.setWindowTitle(f"Face Matching v{__version__} · GPU 视频人脸比对")
         self.resize(1420, 880)
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)

@@ -38,9 +38,9 @@ CUDA 启动时执行真实推理并检查节点执行记录，要求存在 CUDA 
 .\scripts\build_offline_bundle.ps1 -Clean -AcceptResearchWeights
 ```
 
-构建脚本会先跑测试，下载并校验固定 SHA-256 的模型，然后把 Python、PySide6、OpenCV、CUDA/OpenVINO GPU 运行库和两套模型一并打入 `dist\FaceMatching-v2.5.0-windows-x64.zip`。目标机不需要 Python、CUDA Toolkit、OpenVINO Toolkit 或互联网；只需预装对应显卡驱动。
+构建脚本会先跑测试，下载并校验固定 SHA-256 的模型，然后把 Python、PySide6、OpenCV、CUDA/OpenVINO GPU 运行库和两套模型一并打入 `dist\FaceMatching-v2.5.2-windows-x64.zip`。目标机不需要 Python、CUDA Toolkit、OpenVINO Toolkit 或互联网；只需预装对应显卡驱动。
 
-目标机可直接双击 `FaceMatching-v2.5.0-Setup.exe` 安装；也可解压便携 ZIP 后双击 `安装并启动 Face Matching.cmd`，自动校验完整性、GPU 和模型后启动。两种方式都不会调用 `winget` 或 `pip`。
+目标机可直接双击 `FaceMatching-v2.5.2-Setup.exe` 安装；也可解压便携 ZIP 后双击 `安装并启动 Face Matching.cmd`。启动窗口会先显示 `Face Matching Offline Bundle v2.5.2` 和构建标记，再离线校验 Qt GUI 运行库、GPU 和模型。两种方式都不会调用 `winget` 或 `pip`。
 
 > NVIDIA 显卡驱动是与机器/系统绑定的设备组件，不随应用包分发；其余应用运行依赖和模型均包含在离线包中。包含 LVFace-B 权重前必须接受其非商业研究限制；商业部署可只构建 `auraface`。
 

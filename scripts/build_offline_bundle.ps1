@@ -14,7 +14,7 @@ $BuildEnvironment = Join-Path $ProjectRoot ".build-venv"
 $BuildPython = Join-Path $BuildEnvironment "Scripts\python.exe"
 $ModelRoot = Join-Path $ProjectRoot ".build-assets\models"
 $ReleaseRoot = Join-Path $ProjectRoot "dist"
-$ReleaseName = "FaceMatching-v2.5.0-windows-x64"
+$ReleaseName = "FaceMatching-v2.5.2-windows-x64"
 $ReleaseDirectory = Join-Path $ReleaseRoot $ReleaseName
 $Archive = Join-Path $ReleaseRoot ($ReleaseName + ".zip")
 
@@ -109,6 +109,24 @@ finally {
 
 if (-not (Test-Path -LiteralPath (Join-Path $ReleaseDirectory "FaceMatching.exe") -PathType Leaf)) {
     throw "PyInstaller did not create the expected offline release directory."
+}
+if (Test-Path -LiteralPath (Join-Path $ReleaseDirectory "_internal\icuuc.dll") -PathType Leaf) {
+    throw "An external icuuc.dll shadowed the Windows system ICU shim in the offline bundle."
+}
+
+$GuiReport = Join-Path $ProjectRoot ".build-assets\gui-runtime-smoke-$PID.json"
+try {
+    $GuiCheck = Start-Process -FilePath (Join-Path $ReleaseDirectory "FaceMatching.exe") `
+        -ArgumentList @("--check-gui", "--report", $GuiReport) -Wait -PassThru -WindowStyle Hidden
+    if ($GuiCheck.ExitCode -ne 0) {
+        if (Test-Path -LiteralPath $GuiReport) {
+            Get-Content -LiteralPath $GuiReport
+        }
+        throw "Packaged Qt GUI runtime smoke test failed (exit $($GuiCheck.ExitCode))."
+    }
+}
+finally {
+    Remove-Item -LiteralPath $GuiReport -Force -ErrorAction SilentlyContinue
 }
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "packaging\安装并启动 Face Matching.cmd") `
     -Destination (Join-Path $ReleaseDirectory "安装并启动 Face Matching.cmd") -Force

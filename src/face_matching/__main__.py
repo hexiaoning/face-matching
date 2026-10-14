@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from . import __version__
 from .config import AppConfig
 from .gpu import assert_gpu_available
 from .models import PROFILES, available_profiles, download_profile, required_paths
@@ -26,6 +27,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--download-models", action="store_true", help="下载模型并退出")
     parser.add_argument("--verify-models", action="store_true", help="校验模型 SHA-256 并退出")
     parser.add_argument("--diagnose", action="store_true", help="校验模型并执行真实 GPU 推理")
+    parser.add_argument("--check-gui", action="store_true", help="检查离线 Qt GUI 运行库并退出")
     parser.add_argument("--report", type=Path, help="把诊断 JSON 写入指定文件")
     parser.add_argument("--profile", choices=sorted(PROFILES), help="覆盖配置中的模型档")
     args = parser.parse_args(argv)
@@ -73,6 +75,29 @@ def main(argv: list[str] | None = None) -> int:
             _write_report(args.report, {
                 "ok": False,
                 "profile": config.model_profile,
+                "error": str(exc),
+            })
+            return 2
+    if args.check_gui:
+        try:
+            from PySide6 import __version__ as pyside_version
+            from PySide6.QtCore import qVersion
+            from PySide6.QtWidgets import QApplication
+
+            application = QApplication.instance() or QApplication(sys.argv[:1])
+            application.processEvents()
+            _write_report(args.report, {
+                "ok": True,
+                "application_version": __version__,
+                "pyside_version": pyside_version,
+                "qt_version": qVersion(),
+            })
+            application.quit()
+            return 0
+        except Exception as exc:
+            _write_report(args.report, {
+                "ok": False,
+                "application_version": __version__,
                 "error": str(exc),
             })
             return 2

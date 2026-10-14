@@ -1,8 +1,10 @@
 from pathlib import Path
 from importlib.util import find_spec
 import os
+import sys
 
 from PyInstaller.utils.hooks import collect_all, copy_metadata
+from PyInstaller.building.datastruct import TOC
 
 
 project_root = Path(os.environ.get("FACE_MATCHING_PROJECT_ROOT", Path.cwd())).resolve()
@@ -82,6 +84,28 @@ a = Analysis(
     noarchive=False,
     optimize=1,
 )
+
+# PySide6's Qt6Core uses the unversioned Windows ICU compatibility shim.
+# Never let an unrelated icuuc.dll discovered on the build machine's PATH
+# shadow the system shim. This previously collected Codex/Poppler's ICU,
+# whose version-suffixed exports made QtWidgets fail with ERROR_PROC_NOT_FOUND.
+runtime_root = Path(sys.prefix).resolve()
+
+
+def is_external_icu(entry):
+    destination = Path(entry[0]).name.lower()
+    is_icu = (
+        destination == "icuuc.dll"
+        or destination.startswith("icudt") and destination.endswith(".dll")
+        or destination.startswith("icuin") and destination.endswith(".dll")
+    )
+    if not is_icu:
+        return False
+    source = Path(entry[1]).resolve()
+    return not source.is_relative_to(runtime_root)
+
+
+a.binaries = TOC(entry for entry in a.binaries if not is_external_icu(entry))
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -107,5 +131,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="FaceMatching-v2.5.0-windows-x64",
+    name="FaceMatching-v2.5.2-windows-x64",
 )
