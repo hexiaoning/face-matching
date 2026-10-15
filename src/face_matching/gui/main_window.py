@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 import cv2
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import (
     QApplication,
@@ -191,13 +191,25 @@ class VideoWorker(QThread):
     stats = Signal(str)
     failed = Signal(str)
 
-    def __init__(self, engine: FaceEngine, source: str, frame_interval: int) -> None:
+    def __init__(self, engine: FaceEngine, source: str, frame_interval: int,
+                 first_track_id: int = 1) -> None:
         super().__init__()
         self.engine = engine
         self.source = source
         self.frame_interval = max(1, int(frame_interval))
         self._running = True
         self.had_error = False
+        self.next_track_id = first_track_id
+        self._track_ids: dict[int, int] = {}
+
+    def _namespace_result(self, result: FrameResult) -> FrameResult:
+        tracks = []
+        for track in result.tracks:
+            if track.id not in self._track_ids:
+                self._track_ids[track.id] = self.next_track_id
+                self.next_track_id += 1
+            tracks.append(replace(track, id=self._track_ids[track.id]))
+        return replace(result, tracks=tuple(tracks))
 
     def stop(self) -> None:
         self._running = False
@@ -254,7 +266,7 @@ class VideoWorker(QThread):
                     raise ValueError(f"无法读取图片：{label}")
                 if not self._running:
                     return
-                result = self.engine.process_image(image)
+                result = self._namespace_result(self.engine.process_image(image))
                 self._report_matches(result, {}, 1, image)
                 self.frame_ready.emit(self._qimage(image, None), result, 1)
                 self.stats.emit(
@@ -299,7 +311,7 @@ class VideoWorker(QThread):
                 frame_index += 1
                 last_frame = frame
                 if frame_index == 1 or frame_index % self.frame_interval == 0:
-                    last_result = self.engine.process_frame(frame, frame_index)
+                    last_result = self._namespace_result(self.engine.process_frame(frame, frame_index))
                     self._report_matches(last_result, reported_scores, frame_index, frame)
                 now = time.perf_counter()
                 if _rate_limit_due(last_preview_at, now, self.PREVIEW_INTERVAL_SECONDS):
@@ -341,6 +353,12 @@ class MainWindow(QMainWindow):
         self.match_context: dict[tuple[int, str], dict] = {}
         self.association_context: dict[int, dict] = {}
         self._reviewing = False
+        self.pending_sources: list[str] = []
+        self.batch_total = 0
+        self.batch_completed = 0
+        self.batch_errors: list[str] = []
+        self.next_track_id = 1
+        self._last_submitted_text = ""
         self.setWindowTitle(f"Face Matching v{__version__} · GPU 图片 / 视频人脸检索")
         self.resize(1420, 880)
         self.tabs = QTabWidget()
@@ -426,13 +444,19 @@ class MainWindow(QMainWindow):
         self.source_edit = QLineEdit()
         self.source_edit.setMaxLength(16 * 1024 * 1024)
         self.source_edit.setPlaceholderText("图片 / 视频文件、RTSP/RTMP 地址，或摄像头编号（例如 0）")
+        self.source_timer = QTimer(self)
+        self.source_timer.setSingleShot(True)
+        self.source_timer.setInterval(700)
+        self.source_timer.timeout.connect(self._auto_start_source)
+        self.source_edit.textEdited.connect(lambda text: self.source_timer.start())
+        self.source_edit.editingFinished.connect(self._auto_start_source)
         self.browse_button = QPushButton("选择图片 / 视频…")
         browse = self.browse_button
         camera = QPushButton("摄像头 0")
         self.start_button = QPushButton("开始识别")
         self.stop_button = QPushButton("停止")
         browse.clicked.connect(self._browse_video)
-        camera.clicked.connect(lambda: self.source_edit.setText("0"))
+        camera.clicked.connect(self._start_camera)
         self.start_button.clicked.connect(self.start_video)
         self.stop_button.clicked.connect(self.stop_video)
         source_row = QHBoxLayout()
@@ -444,9 +468,9 @@ class MainWindow(QMainWindow):
         source_row.addWidget(self.stop_button)
         self.video_label = FacePreview()
         self.video_label.track_context_requested.connect(self._track_menu)
-        self.events = QTableWidget(0, 8)
+        self.events = QTableWidget(0, 9)
         self.events.setHorizontalHeaderLabels([
-            "时间", "轨迹", "姓名", "身份证号", "相似度", "质量", "标注", "操作"
+            "时间", "轨迹", "姓名", "身份证号", "相似度", "质量", "标注", "操作", "来源"
         ])
         self.events.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.events.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
@@ -459,6 +483,9 @@ class MainWindow(QMainWindow):
         body.addWidget(self.events, 2)
         layout = QVBoxLayout(tab)
         layout.addLayout(source_row)
+        self.queue_label = QLabel("支持多选图片和视频；选择或输入后自动比对，处理中可继续添加。")
+        self.queue_label.setWordWrap(True)
+        layout.addWidget(self.queue_label)
         layout.addLayout(body, 1)
         hint = QHBoxLayout()
         hint.addWidget(QLabel("待确认为相似候选，需人工核实；右键人脸框关联人员，右侧可标注“不是此人”。"))
@@ -679,46 +706,112 @@ class MainWindow(QMainWindow):
         layout.addStretch()
 
     def _browse_video(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "选择图片或视频", "",
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "选择图片或视频（可多选，选择后自动比对）", "",
             "图片和视频 (*.jpg *.jpeg *.png *.bmp *.webp *.tif *.tiff *.mp4 *.avi *.mkv *.mov *.m4v);;"
             "图片 (*.jpg *.jpeg *.png *.bmp *.webp *.tif *.tiff);;"
             "视频 (*.mp4 *.avi *.mkv *.mov *.m4v);;所有文件 (*)"
         )
-        if path:
-            self.source_edit.setText(path)
+        if paths:
+            self.source_edit.setText("; ".join(paths))
+            self._submit_sources(paths)
+
+    @staticmethod
+    def _parse_sources(text: str) -> list[str]:
+        text = text.strip()
+        if not text:
+            return []
+        if is_image_data_uri(text) or "://" in text or Path(text).is_file():
+            return [text]
+        return [part.strip().strip('"') for part in text.replace("\n", ";").split(";")
+                if part.strip().strip('"')]
+
+    def _auto_start_source(self) -> None:
+        text = self.source_edit.text().strip()
+        if not self.engine or text == self._last_submitted_text:
+            return
+        sources = self._parse_sources(text)
+        if sources and all(is_image_data_uri(source) or source.isdigit() or "://" in source
+                           or Path(source).is_file() for source in sources):
+            self._submit_sources(sources)
+
+    def _start_camera(self) -> None:
+        self.source_edit.setText("0")
+        self._submit_sources(["0"])
 
     def start_video(self) -> None:
         if not self.engine:
             return
-        source = self.source_edit.text().strip()
-        if not source:
+        sources = self._parse_sources(self.source_edit.text())
+        if not sources:
             QMessageBox.warning(self, "缺少检索来源", "请选择图片、视频，或输入流地址、摄像头编号。")
             return
-        if is_image_data_uri(source):
-            try:
-                source = str(store_image_data_uri(
-                    source, self.database.path.parent / "query_images"
-                ).resolve())
-                self.source_edit.setText(source)
-            except (ValueError, OSError, cv2.error) as exc:
-                QMessageBox.warning(self, "图片数据无效", str(exc))
-                return
-        if Path(source).is_file():
-            source = str(Path(source).resolve())
-        if not self.stop_video():
+        self._submit_sources(sources)
+
+    def _submit_sources(self, sources: list[str]) -> None:
+        if not self.engine:
             return
-        self.events.setRowCount(0)
-        self.video_matches.clear()
-        self.match_context.clear()
-        self.association_context.clear()
-        self.session_id = uuid.uuid4().hex
+        self.source_timer.stop()
+        normalized = []
+        try:
+            for source in sources:
+                if is_image_data_uri(source):
+                    source = str(store_image_data_uri(
+                        source, self.database.path.parent / "query_images"
+                    ).resolve())
+                if Path(source).is_file():
+                    source = str(Path(source).resolve())
+                if source not in normalized:
+                    normalized.append(source)
+        except (ValueError, OSError, cv2.error) as exc:
+            QMessageBox.warning(self, "检索来源无效", str(exc))
+            return
+        if not normalized:
+            return
+        self.source_edit.setText("; ".join(normalized))
+        self._last_submitted_text = self.source_edit.text().strip()
+        ongoing = self.worker is not None and (
+            self.worker.isRunning() or bool(self.pending_sources) or self._reviewing
+        )
+        if not ongoing:
+            if not self.stop_video():
+                return
+            self.events.setRowCount(0)
+            self.video_matches.clear()
+            self.match_context.clear()
+            self.association_context.clear()
+            self.session_id = uuid.uuid4().hex
+            self.next_track_id = 1
+            self.batch_total = self.batch_completed = 0
+            self.batch_errors.clear()
+        added = [source for source in normalized if source not in self.pending_sources
+                 and (not ongoing or source != self.active_source)]
+        self.pending_sources.extend(added)
+        self.batch_total += len(added)
+        if ongoing:
+            self._update_queue_label()
+        else:
+            self._start_next_source()
+
+    def _update_queue_label(self) -> None:
+        name = Path(self.active_source).name or self.active_source
+        self.queue_label.setText(
+            f"已完成 {self.batch_completed}/{self.batch_total} 个来源 · "
+            f"{'当前：' + name + ' · ' if self.worker else ''}待处理 {len(self.pending_sources)} 个"
+        )
+        self.queue_label.setToolTip("\n".join([self.active_source, *self.pending_sources]))
+
+    def _start_next_source(self) -> None:
+        if not self.pending_sources:
+            return
+        source = self.pending_sources.pop(0)
         self.active_source = source
         self.preview_image = QImage()
         self.preview_result = None
         self.preview_frame_index = 0
         self.video_label.set_frame(self.preview_image, None)
-        self.worker = VideoWorker(self.engine, source, self.config.frame_interval)
+        self.worker = VideoWorker(self.engine, source, self.config.frame_interval, self.next_track_id)
+        self.worker.setParent(self)
         self.worker.frame_ready.connect(self._show_frame)
         self.worker.recognized.connect(self._on_recognized)
         self.worker.stats.connect(self._worker_stats)
@@ -726,9 +819,12 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self._video_finished)
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
+        self._update_queue_label()
         self.worker.start()
 
     def stop_video(self) -> bool:
+        self.source_timer.stop()
+        self.pending_sources.clear()
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             if not self.worker.wait(5_000):
@@ -738,25 +834,45 @@ class MainWindow(QMainWindow):
                     "视频后端仍在等待网络超时，请稍后再试。",
                 )
                 return False
+        stopped_worker = self.worker
         self.worker = None
+        if stopped_worker is not None:
+            stopped_worker.deleteLater()
         if self.engine:
             self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
+        self._update_queue_label()
         return True
 
     def _video_finished(self) -> None:
         if self.sender() is not None and self.sender() is not self.worker:
             return
+        if self._reviewing:
+            finished_worker = self.worker
+            QTimer.singleShot(100, lambda: self._video_finished()
+                              if self.worker is finished_worker else None)
+            return
+        if self.worker is None:
+            return
+        self.next_track_id = self.worker.next_track_id
+        self.batch_completed += 1
+        completed_worker = self.worker
+        self.worker = None
+        completed_worker.deleteLater()
+        if self.pending_sources:
+            self._start_next_source()
+            return
         self.start_button.setEnabled(bool(self.engine))
         self.stop_button.setEnabled(False)
-        if self.worker and self.worker.had_error:
-            return
+        self._update_queue_label()
         kind = "图片" if is_image_source(self.active_source) else "视频"
         faces = f" · 检测到 {self.preview_result.detected_faces} 张人脸" if self.preview_result else ""
         self.statusBar().showMessage(
             f"{kind}处理完成{faces} · 确认匹配 {len(self.video_matches)} 人"
             f" · 待确认 {self.video_matches.pending_count} 人"
         )
+        if self.batch_errors:
+            QMessageBox.warning(self, "部分来源处理失败", "\n".join(self.batch_errors[:8]))
 
     def _worker_stats(self, message: str) -> None:
         if self.sender() is self.worker:
@@ -764,8 +880,8 @@ class MainWindow(QMainWindow):
 
     def _worker_failed(self, message: str) -> None:
         if self.sender() is self.worker:
+            self.batch_errors.append(f"{self.active_source}：{message}")
             self.statusBar().showMessage("检索处理失败")
-            QMessageBox.critical(self, "检索处理失败", message)
 
     def _show_frame(self, image: QImage, result: FrameResult | None, frame_index: int) -> None:
         if self.sender() is not None and self.sender() is not self.worker:
@@ -798,6 +914,7 @@ class MainWindow(QMainWindow):
     def _on_recognized(self, event: dict) -> None:
         if self.sender() is not None and self.sender() is not self.worker:
             return
+        event = {**event, "source": self.active_source}
         changed = self.video_matches.update(event)
         key = (event["track_id"], event["person_id"])
         previous = self.match_context.get(key)
@@ -837,11 +954,15 @@ class MainWindow(QMainWindow):
             button = QPushButton(action)
             button.clicked.connect(lambda checked=False, selected=match: self._review_match(selected))
             self.events.setCellWidget(row, 7, button)
+            source_item = QTableWidgetItem(Path(match.source).name)
+            source_item.setToolTip(match.source)
+            self.events.setItem(row, 8, source_item)
 
     def _save_annotation(
         self, track_id: int, person_id: str, action: str, context: dict | None = None
     ) -> bool:
         context = context or {}
+        source = context.get("source", self.active_source)
         try:
             folder = self.database.path.parent / "annotations" / self.session_id
             folder.mkdir(parents=True, exist_ok=True)
@@ -853,13 +974,14 @@ class MainWindow(QMainWindow):
                 face_file.write_bytes(context["face_jpeg"])
                 face_path = str(face_file)
             # Preserve the exact visible frame for right-click annotations.
-            if context.get("frame_index") == self.preview_frame_index and not self.preview_image.isNull():
+            if (source == self.active_source and context.get("frame_index") == self.preview_frame_index
+                    and not self.preview_image.isNull()):
                 snapshot = folder / f"{token}-frame.jpg"
                 if not self.preview_image.save(str(snapshot), "JPG", 95):
                     raise OSError("无法保存标注画面")
                 snapshot_path = str(snapshot)
             self.database.log_annotation(
-                self.session_id, self.active_source, track_id, action, person_id,
+                self.session_id, source, track_id, action, person_id,
                 context.get("frame_index", self.preview_frame_index), context.get("bbox"),
                 snapshot_path, face_path,
                 score=context.get("score"), quality=context.get("quality"),
@@ -917,12 +1039,13 @@ class MainWindow(QMainWindow):
             if person is None:
                 return
             context = {"frame_index": self.preview_frame_index, "bbox": track.bbox,
-                       "score": track.score, "quality": track.quality}
+                       "score": track.score, "quality": track.quality, "source": self.active_source}
             if not self._save_annotation(track.id, person.id, "associate", context):
                 return
             self.video_matches.associate(VideoMatch(
                 datetime.now().strftime("%H:%M:%S"), track.id, person.id,
                 person.name, person.id_card, 0.0, track.quality, "人工关联",
+                source=self.active_source,
             ))
             self.association_context[track.id] = context
             self._render_matches()

@@ -6,7 +6,7 @@ title Face Matching v2.6.2 - Install and Start
 
 echo ============================================================
 echo Face Matching Offline Bundle v2.6.2
-echo Build marker: ANNOTATION-COMPARE-SELECT-20261015
+echo Build marker: BATCH-ANNOTATION-COMPARE-20261015
 echo ============================================================
 echo.
 

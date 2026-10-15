@@ -82,3 +82,14 @@ def test_confirmation_takes_precedence_over_a_higher_pending_score():
     assert matches.displayed()[0].score == 0.7
     assert len(matches) == 1 and matches.pending_count == 0
     assert not matches.update({**event("a", 0.99), "status": "待确认"})
+
+
+def test_batch_keeps_same_person_in_each_source_with_independent_reviews():
+    matches = VideoMatchList()
+    matches.update({**event("a", 0.9, 1), "source": "photo.jpg"})
+    matches.update({**event("a", 0.8, 2), "source": "video.mp4"})
+    assert len(matches.ranked()) == 2
+    assert len(matches) == 1
+    matches.reject(1, "a")
+    assert matches.ranked()[0].source == "video.mp4"
+    assert matches.displayed()[-1].source == "photo.jpg"

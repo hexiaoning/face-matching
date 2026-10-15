@@ -15,6 +15,7 @@ class VideoMatch:
     quality: float
     status: str = "自动匹配"
     reason: str = ""
+    source: str = ""
 
 
 class VideoMatchList:
@@ -41,6 +42,7 @@ class VideoMatchList:
             quality=float(event["quality"]),
             status=str(event.get("status", "自动匹配")),
             reason=str(event.get("reason", "")),
+            source=str(event.get("source", "")),
         )
         key = (match.track_id, match.person_id)
         if key in self._rejected:
@@ -77,18 +79,19 @@ class VideoMatchList:
         return {"待确认": 0, "自动匹配": 1, "人工关联": 2}.get(match.status, 0)
 
     def ranked(self) -> tuple[VideoMatch, ...]:
-        best: dict[str, VideoMatch] = {}
+        best: dict[tuple[str, str], VideoMatch] = {}
         candidates = [
             match for key, match in self._matches.items()
             if key not in self._rejected and match.track_id not in self._associated
         ] + list(self._associated.values())
         for match in candidates:
-            previous = best.get(match.person_id)
+            key = (match.source, match.person_id)
+            previous = best.get(key)
             # A manually verified identity takes precedence over an automatic score.
             if previous is None or (self._priority(match), match.score) > (
                 self._priority(previous), previous.score
             ):
-                best[match.person_id] = match
+                best[key] = match
         return tuple(sorted(
             best.values(), key=lambda item: (-item.score, item.name, item.person_id)
         ))
@@ -102,8 +105,8 @@ class VideoMatchList:
         return self.ranked() + tuple(rejected)
 
     def __len__(self) -> int:
-        return sum(match.status != "待确认" for match in self.ranked())
+        return len({match.person_id for match in self.ranked() if match.status != "待确认"})
 
     @property
     def pending_count(self) -> int:
-        return sum(match.status == "待确认" for match in self.ranked())
+        return len({match.person_id for match in self.ranked() if match.status == "待确认"})
