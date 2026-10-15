@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import zipfile
 
 import cv2
@@ -8,6 +9,7 @@ import pytest
 from face_matching.annotation_export import ExportOptions, export_annotation_library, write_video_clip
 from face_matching.database import FaceDatabase, FaceSampleInput
 from face_matching.vision.io import write_jpeg
+from face_matching.annotations import annotation_states
 
 
 @pytest.fixture
@@ -227,3 +229,27 @@ def test_selection_does_not_revive_replaced_association_or_old_rejection(library
     records = {record["id"]: record for record in json.loads(files["annotations.json"])}
     assert records[1]["superseded_by"] == 2
     assert records[3]["superseded_by"] == 4
+
+
+@pytest.mark.parametrize("initial,next_action", [("associate", "reject"), ("reject", "associate")])
+def test_review_transition_is_atomic_when_new_choice_cannot_be_saved(library, initial, next_action):
+    database, person, _, video = library
+    database.log_annotation("transition", str(video), 1, initial, person)
+    before = database.list_annotations()
+    with database._connect() as connection:
+        connection.executescript(f"""CREATE TRIGGER fail_choice BEFORE INSERT ON recognition_annotations
+            WHEN NEW.action='{next_action}' BEGIN SELECT RAISE(ABORT, 'cannot save'); END;""")
+    with pytest.raises(sqlite3.IntegrityError, match="cannot save"):
+        database.log_annotation("transition", str(video), 1, next_action, person, resolve_conflicts=True)
+    assert database.list_annotations() == before
+    assert annotation_states(before)[before[-1]["id"]]["is_current"]
+
+
+def test_selected_old_positive_label_is_inactive_after_negative_review(library, tmp_path):
+    database, person, _, video = library
+    database.log_annotation("s1", str(video), 1, "reject", person, 15, resolve_conflicts=True)
+    target = tmp_path / "old-positive.zip"
+    export_annotation_library(database, target, ExportOptions(include_media=False), annotation_ids={1})
+    files = read_export(target)
+    assert json.loads(files["annotations.json"])[0]["is_current"] is False
+    assert json.loads(files["current_annotations.json"]) == []

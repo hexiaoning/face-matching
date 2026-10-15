@@ -1,4 +1,5 @@
 from face_matching.results import VideoMatch, VideoMatchList
+from dataclasses import replace
 
 
 def event(person_id: str, score: float, track_id: int = 1) -> dict[str, object]:
@@ -93,3 +94,30 @@ def test_batch_keeps_same_person_in_each_source_with_independent_reviews():
     matches.reject(1, "a")
     assert matches.ranked()[0].source == "video.mp4"
     assert matches.displayed()[-1].source == "photo.jpg"
+
+
+def test_manual_association_can_be_rejected_even_without_an_automatic_candidate():
+    matches = VideoMatchList()
+    matches.update(event("a", 0.9))
+    manual = VideoMatch("12:01:00", 1, "b", "Bob", "ID-b", 0.0, 0.8, has_score=False)
+    matches.associate(manual)
+    matches.reject(1, "b")
+    assert matches.association(1) is None
+    rejected = next(match for match in matches.displayed() if match.person_id == "b")
+    assert rejected.status == "不是此人" and not rejected.has_score
+    matches.associate(replace(rejected, status="人工确认"))
+    assert matches.association(1).status == "人工确认"
+    assert not matches.is_rejected(1, "b")
+    matches.remove_association(1)
+    assert [match.person_id for match in matches.displayed()] == ["a"]
+
+
+def test_reviewed_sample_score_survives_later_automatic_updates():
+    matches = VideoMatchList()
+    matches.update(event("a", 0.7))
+    matches.associate(replace(matches.ranked()[0], status="人工确认"))
+    matches.update(event("a", 0.9))
+    matches.reject(1, "a")
+    assert matches.displayed()[0].score == 0.7
+    matches.undo_rejection(1, "a")
+    assert matches.displayed()[0].score == 0.9

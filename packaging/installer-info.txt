@@ -1,4 +1,4 @@
-Face Matching v2.6.2 是完全离线的 GPU 图片 / 视频人脸检索应用，支持人工标注、关联人员和导出标注库。
+Face Matching v2.6.3 是完全离线的 GPU 图片 / 视频人脸检索应用，支持人工标注、关联人员和导出标注库。
 
 目标机不需要网络、Python、winget、CUDA Toolkit、cuDNN 或 OpenVINO Toolkit；只需安装对应的 NVIDIA 或 Intel 显卡驱动。
 

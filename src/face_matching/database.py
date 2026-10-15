@@ -323,19 +323,41 @@ class FaceDatabase:
         score: float | None = None,
         quality: float | None = None,
         model_id: str | None = None,
+        resolve_conflicts: bool = False,
     ) -> None:
         if action not in {"reject", "associate", "undo_rejection", "remove_association"}:
             raise ValueError("未知标注操作")
         with self._connect() as connection:
-            connection.execute(
+            actions = []
+            if resolve_conflicts and action == "associate":
+                previous = connection.execute(
+                    """SELECT action FROM recognition_annotations
+                       WHERE session_id=? AND track_id=? AND person_id=?
+                       AND action IN ('reject', 'undo_rejection') ORDER BY id DESC LIMIT 1""",
+                    (session_id, track_id, person_id),
+                ).fetchone()
+                if previous and previous["action"] == "reject":
+                    actions.append("undo_rejection")
+            elif resolve_conflicts and action == "reject":
+                previous = connection.execute(
+                    """SELECT action, person_id FROM recognition_annotations
+                       WHERE session_id=? AND track_id=?
+                       AND action IN ('associate', 'remove_association') ORDER BY id DESC LIMIT 1""",
+                    (session_id, track_id),
+                ).fetchone()
+                if previous and previous["action"] == "associate" and previous["person_id"] == person_id:
+                    actions.append("remove_association")
+            actions.append(action)
+            connection.executemany(
                 """INSERT INTO recognition_annotations(
                        session_id, source, track_id, frame_index, bbox, snapshot_path, face_path,
                        score, quality, model_id, action,
                        person_id, occurred_at
                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (session_id, source, int(track_id), int(frame_index),
+                [(session_id, source, int(track_id), int(frame_index),
                  json.dumps(bbox) if bbox is not None else None,
-                 snapshot_path, face_path, score, quality, model_id, action, person_id, _now()),
+                 snapshot_path, face_path, score, quality, model_id, operation, person_id, _now())
+                 for operation in actions],
             )
 
     def list_annotations(self) -> list[dict]:

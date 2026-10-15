@@ -7,7 +7,7 @@ import pytest
 import cv2
 from PySide6.QtCore import QPoint, QPointF, QItemSelectionModel
 from PySide6.QtGui import QImage
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QApplication, QDialog, QPushButton
 
 from face_matching.config import AppConfig
 from face_matching.database import FaceDatabase, FaceSampleInput
@@ -21,6 +21,7 @@ from face_matching.matching import MatchResult
 from face_matching.vision.detector import Detection
 from face_matching.vision.io import write_jpeg
 from face_matching.vision.tracker import FaceTracker
+from face_matching.annotations import annotation_states
 
 
 @pytest.fixture(scope="module")
@@ -156,9 +157,84 @@ def test_pending_candidate_is_visible_and_rejectable_without_a_confirmed_event(t
     assert len(window.video_matches) == 0
     with window.database._connect() as connection:
         assert connection.execute("SELECT COUNT(*) FROM recognition_events").fetchone()[0] == 0
-    window.events.cellWidget(0, 7).click()
+    window.events.cellWidget(0, 7).findChild(QPushButton, "reject_person").click()
     assert window.video_label.result.tracks[0].annotation == "不是此人"
     assert window.database.list_annotations()[0]["action"] == "reject"
+    window.close()
+
+
+def test_two_review_buttons_confirm_reject_switch_and_undo_with_consistent_history(tmp_path, monkeypatch, app):
+    monkeypatch.setenv("FACE_MATCHING_HOME", str(tmp_path))
+    window = MainWindow(AppConfig())
+    person = window.database.add_person("Candidate", "ID", [
+        FaceSampleInput("photo.jpg", np.array([1, 0]), "model", 0.9)
+    ])
+    window.session_id, window.active_source = "test", "original.webp"
+    window._on_recognized({"time": "12:00:00", "track_id": 1, "person_id": person,
+        "name": "Candidate", "id_card": "ID", "score": .413, "quality": .816,
+        "status": "待确认", "confirmed": False, "frame_index": 1, "bbox": (0, 0, 50, 50)})
+
+    def buttons():
+        return {button.text(): button for button in window.events.cellWidget(0, 7).findChildren(QPushButton)}
+
+    assert set(buttons()) == {"是他", "不是他"}
+    window.show()
+    app.processEvents()
+    assert window.events.horizontalHeader().visualIndex(2) == 0
+    assert window.events.horizontalHeader().visualIndex(7) == 1
+    assert window.events.columnViewportPosition(7) + window.events.columnWidth(7) <= window.events.viewport().width()
+    assert not any(button.isChecked() for button in buttons().values())
+    window.active_source = "another-source.mp4"
+    buttons()["是他"].click()
+    assert window.events.item(0, 6).text() == "人工确认"
+    assert window.events.item(0, 4).text() == "0.413"
+    assert buttons()["是他"].isChecked() and not buttons()["不是他"].isChecked()
+    assert len(window.video_matches) == 1
+    buttons()["不是他"].click()
+    assert window.video_matches.association(1) is None
+    assert buttons()["不是他"].isChecked() and not buttons()["是他"].isChecked()
+    assert len(window.video_matches) == 0
+    buttons()["是他"].click()
+    assert window.video_matches.association(1).person_id == person
+    assert not window.video_matches.is_rejected(1, person)
+    records = window.database.list_annotations()
+    states = annotation_states(records)
+    assert [record["action"] for record in records if states[record["id"]]["is_current"]] == ["associate"]
+    buttons()["是他"].click()
+    assert window.events.item(0, 6).text() == "待确认"
+    assert not any(button.isChecked() for button in buttons().values())
+    buttons()["不是他"].click()
+    buttons()["不是他"].click()
+    records = window.database.list_annotations()
+    assert [record["action"] for record in records] == [
+        "associate", "remove_association", "reject", "undo_rejection", "associate",
+        "remove_association", "reject", "undo_rejection",
+    ]
+    assert all(record["source"] == "original.webp" and record["frame_index"] == 1 for record in records)
+    assert not any(state["is_current"] for state in annotation_states(records).values())
+    with window.database._connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM recognition_events").fetchone()[0] == 0
+    window.close()
+
+
+@pytest.mark.parametrize("choice", ["confirm_person", "reject_person"])
+def test_failed_review_restores_both_button_states(tmp_path, monkeypatch, app, choice):
+    monkeypatch.setenv("FACE_MATCHING_HOME", str(tmp_path))
+    window = MainWindow(AppConfig())
+    person = window.database.add_person("Alice", "ID", [
+        FaceSampleInput("photo.jpg", np.array([1, 0]), "model", 0.9)
+    ])
+    window._on_recognized({"time": "12:00:00", "track_id": 1, "person_id": person,
+        "name": "Alice", "id_card": "ID", "score": .8, "quality": .9})
+    errors = []
+    monkeypatch.setattr("face_matching.gui.main_window.QMessageBox.critical", lambda *args: errors.append(args))
+    monkeypatch.setattr(window.database, "log_annotation", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk full")))
+    window.events.cellWidget(0, 7).findChild(QPushButton, choice).click()
+    assert errors
+    assert not any(button.isChecked() for button in window.events.cellWidget(0, 7).findChildren(QPushButton))
+    assert window.events.item(0, 6).text() == "自动匹配"
+    assert window.video_matches.association(1) is None
+    assert not window.video_matches.is_rejected(1, person)
     window.close()
 
 
@@ -242,11 +318,11 @@ def test_gui_review_and_right_click_association_persist_and_refresh(tmp_path, mo
         "name": "Alice", "id_card": "ID-a", "score": 0.8, "quality": 0.9,
         "frame_index": 5, "bbox": current.bbox,
     })
-    window.events.cellWidget(0, 7).click()
+    window.events.cellWidget(0, 7).findChild(QPushButton, "reject_person").click()
     assert window.events.item(0, 6).text() == "不是此人"
     assert window.video_label.result.tracks[0].person_id is None
     assert len(window.video_matches) == 0
-    window.events.cellWidget(0, 7).click()
+    window.events.cellWidget(0, 7).findChild(QPushButton, "reject_person").click()
     assert window.video_label.result.tracks[0].person_id == alice
 
     class ChosenMenu:
@@ -272,7 +348,7 @@ def test_gui_review_and_right_click_association_persist_and_refresh(tmp_path, mo
     assert window.events.item(0, 4).text() == "—"
     assert window.events.item(0, 6).text() == "人工关联"
     assert window.video_label.result.tracks[0].person_id == bob
-    window.events.cellWidget(0, 7).click()
+    window.events.cellWidget(0, 7).findChild(QPushButton, "confirm_person").click()
     assert window.video_label.result.tracks[0].person_id == alice
     annotations = FaceDatabase(window.database.path).list_annotations()
     assert [row["action"] for row in annotations] == [

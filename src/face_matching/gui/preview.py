@@ -17,7 +17,7 @@ def draw_tracks(image: QImage, result: FrameResult | None) -> QImage:
     for track in result.tracks:
         x1, y1, x2, y2 = (int(value) for value in track.bbox)
         color = QColor(
-            "#58a6ff" if track.annotation == "人工关联" else
+            "#58a6ff" if track.annotation in {"人工关联", "人工确认"} else
             "#ff6b6b" if track.annotation == "不是此人" else
             "#39d98a" if track.person_id else "#ffb020"
         )

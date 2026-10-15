@@ -16,6 +16,7 @@ class VideoMatch:
     status: str = "自动匹配"
     reason: str = ""
     source: str = ""
+    has_score: bool = True
 
 
 class VideoMatchList:
@@ -25,11 +26,13 @@ class VideoMatchList:
         self._matches: dict[tuple[int, str], VideoMatch] = {}
         self._rejected: set[tuple[int, str]] = set()
         self._associated: dict[int, VideoMatch] = {}
+        self._rejected_records: dict[tuple[int, str], VideoMatch] = {}
 
     def clear(self) -> None:
         self._matches.clear()
         self._rejected.clear()
         self._associated.clear()
+        self._rejected_records.clear()
 
     def update(self, event: Mapping[str, object]) -> bool:
         match = VideoMatch(
@@ -57,16 +60,24 @@ class VideoMatchList:
         return before != self.displayed()
 
     def reject(self, track_id: int, person_id: str) -> None:
+        association = self._associated.get(track_id)
+        if association is not None and association.person_id == person_id:
+            self._rejected_records[(track_id, person_id)] = association
+            self._associated.pop(track_id)
         self._rejected.add((track_id, person_id))
 
     def undo_rejection(self, track_id: int, person_id: str) -> None:
         self._rejected.discard((track_id, person_id))
+        self._rejected_records.pop((track_id, person_id), None)
 
     def is_rejected(self, track_id: int, person_id: str) -> bool:
         return (track_id, person_id) in self._rejected
 
     def associate(self, match: VideoMatch) -> None:
-        self._associated[match.track_id] = replace(match, status="人工关联")
+        self.undo_rejection(match.track_id, match.person_id)
+        self._associated[match.track_id] = replace(
+            match, status="人工确认" if match.status == "人工确认" else "人工关联"
+        )
 
     def remove_association(self, track_id: int) -> None:
         self._associated.pop(track_id, None)
@@ -76,7 +87,7 @@ class VideoMatchList:
 
     @staticmethod
     def _priority(match: VideoMatch) -> int:
-        return {"待确认": 0, "自动匹配": 1, "人工关联": 2}.get(match.status, 0)
+        return {"待确认": 0, "自动匹配": 1, "人工关联": 2, "人工确认": 2}.get(match.status, 0)
 
     def ranked(self) -> tuple[VideoMatch, ...]:
         best: dict[tuple[str, str], VideoMatch] = {}
@@ -98,8 +109,8 @@ class VideoMatchList:
 
     def displayed(self) -> tuple[VideoMatch, ...]:
         rejected = sorted(
-            (replace(self._matches[key], status="不是此人")
-             for key in self._rejected if key in self._matches),
+            (replace(self._rejected_records.get(key) or self._matches[key], status="不是此人")
+             for key in self._rejected if key in self._matches or key in self._rejected_records),
             key=lambda item: (-item.score, item.track_id, item.person_id),
         )
         return self.ranked() + tuple(rejected)

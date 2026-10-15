@@ -2,11 +2,11 @@
 setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
-title Face Matching v2.6.2 - Install and Start
+title Face Matching v2.6.3 - Install and Start
 
 echo ============================================================
-echo Face Matching Offline Bundle v2.6.2
-echo Build marker: BATCH-ANNOTATION-COMPARE-20261015
+echo Face Matching Offline Bundle v2.6.3
+echo Build marker: DUAL-REVIEW-BUTTONS-20261015
 echo ============================================================
 echo.
 

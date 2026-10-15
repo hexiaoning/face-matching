@@ -352,6 +352,7 @@ class MainWindow(QMainWindow):
         self.preview_frame_index = 0
         self.match_context: dict[tuple[int, str], dict] = {}
         self.association_context: dict[int, dict] = {}
+        self.review_context: dict[tuple[int, str], dict] = {}
         self._reviewing = False
         self.pending_sources: list[str] = []
         self.batch_total = 0
@@ -475,9 +476,12 @@ class MainWindow(QMainWindow):
         self.events.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.events.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.events.horizontalHeader().setMinimumSectionSize(58)
+        header = self.events.horizontalHeader()
+        for visual, logical in enumerate((2, 7, 4, 6, 0, 1, 3, 5, 8)):
+            header.moveSection(header.visualIndex(logical), visual)
         self.events.setSelectionBehavior(QTableWidget.SelectRows)
         self.events.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.events.setToolTip("人工关联和自动确认优先；相似候选列为待确认，悬停可查看原因。“不是此人”针对该行轨迹。")
+        self.events.setToolTip("每行可标注“是他”或“不是他”；再次点击已选按钮可撤销。待确认是相似候选，需人工核实。")
         body = QHBoxLayout()
         body.addWidget(self.video_label, 3)
         body.addWidget(self.events, 2)
@@ -488,7 +492,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.queue_label)
         layout.addLayout(body, 1)
         hint = QHBoxLayout()
-        hint.addWidget(QLabel("待确认为相似候选，需人工核实；右键人脸框关联人员，右侧可标注“不是此人”。"))
+        hint.addWidget(QLabel("待确认为相似候选；右侧标注“是他”或“不是他”，再点已选项可撤销；右键人脸框可关联人员。"))
         hint.addStretch()
         self.export_button = QPushButton("导出标注库…")
         self.export_button.clicked.connect(self.export_annotations)
@@ -780,6 +784,7 @@ class MainWindow(QMainWindow):
             self.video_matches.clear()
             self.match_context.clear()
             self.association_context.clear()
+            self.review_context.clear()
             self.session_id = uuid.uuid4().hex
             self.next_track_id = 1
             self.batch_total = self.batch_completed = 0
@@ -901,7 +906,7 @@ class MainWindow(QMainWindow):
                 association = self.video_matches.association(track.id)
                 if association:
                     track = replace(track, name=association.name, person_id=association.person_id,
-                                    id_card=association.id_card, annotation="人工关联")
+                                    id_card=association.id_card, annotation=association.status)
                 elif (track.person_id or track.candidate_person_id) and self.video_matches.is_rejected(
                     track.id, track.person_id or track.candidate_person_id
                 ):
@@ -936,7 +941,7 @@ class MainWindow(QMainWindow):
         self.events.setRowCount(len(matches))
         for row, match in enumerate(matches):
             values = (match.time, f"#{match.track_id}", match.name, match.id_card,
-                      "—" if match.status == "人工关联" else f"{match.score:.3f}",
+                      "—" if match.status == "人工关联" or not match.has_score else f"{match.score:.3f}",
                       f"{match.quality:.3f}", match.status)
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
@@ -948,12 +953,25 @@ class MainWindow(QMainWindow):
                 elif match.status == "待确认":
                     item.setForeground(QColor("#9a6700"))
                 self.events.setItem(row, column, item)
-            action = "撤销标注" if match.status == "不是此人" else (
-                "取消关联" if match.status == "人工关联" else "不是此人"
-            )
-            button = QPushButton(action)
-            button.clicked.connect(lambda checked=False, selected=match: self._review_match(selected))
-            self.events.setCellWidget(row, 7, button)
+            actions = QWidget()
+            buttons = QHBoxLayout(actions)
+            buttons.setContentsMargins(2, 2, 2, 2)
+            buttons.setSpacing(4)
+            for accepted, label in ((True, "是他"), (False, "不是他")):
+                button = QPushButton(label)
+                button.setFixedWidth(56 if accepted else 70)
+                button.setObjectName("confirm_person" if accepted else "reject_person")
+                button.setCheckable(True)
+                button.setChecked(match.status in {"人工确认", "人工关联"} if accepted
+                                  else match.status == "不是此人")
+                button.setToolTip("再次点击可撤销当前标注" if button.isChecked()
+                                  else ("人工确认是该人员" if accepted else "排除此轨迹与该人员的匹配"))
+                color = "#167542" if accepted else "#b33636"
+                button.setStyleSheet(f"QPushButton:checked {{background:{color};color:white;}}")
+                button.clicked.connect(lambda checked=False, selected=match, choice=accepted:
+                                       self._review_match(selected, choice))
+                buttons.addWidget(button)
+            self.events.setCellWidget(row, 7, actions)
             source_item = QTableWidgetItem(Path(match.source).name)
             source_item.setToolTip(match.source)
             self.events.setItem(row, 8, source_item)
@@ -986,6 +1004,7 @@ class MainWindow(QMainWindow):
                 snapshot_path, face_path,
                 score=context.get("score"), quality=context.get("quality"),
                 model_id=self.engine.model_id if self.engine else None,
+                resolve_conflicts=True,
             )
             self.refresh_annotations()
             return True
@@ -993,19 +1012,31 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "标注保存失败", str(exc))
             return False
 
-    def _review_match(self, match: VideoMatch) -> None:
-        action = {"不是此人": "undo_rejection", "人工关联": "remove_association"}.get(
-            match.status, "reject"
-        )
-        context = self.association_context.get(match.track_id) if match.status == "人工关联" else (
-            self.match_context.get((match.track_id, match.person_id))
-        )
+    def _review_match(self, match: VideoMatch, accepted: bool | None = None) -> None:
+        manual = match.status in {"人工确认", "人工关联"}
+        if accepted is True:
+            action = "remove_association" if manual else "associate"
+        elif accepted is False:
+            action = "undo_rejection" if match.status == "不是此人" else "reject"
+        else:
+            action = {"不是此人": "undo_rejection", "人工关联": "remove_association",
+                      "人工确认": "remove_association"}.get(match.status, "reject")
+        key = (match.track_id, match.person_id)
+        context = (self.association_context.get(match.track_id) if manual else
+                   self.match_context.get(key) or self.review_context.get(key)) or {}
         if not self._save_annotation(match.track_id, match.person_id, action, context):
+            self._render_matches()
             return
+        self.review_context[key] = context.copy()
         if action == "reject":
             self.video_matches.reject(match.track_id, match.person_id)
+            if manual:
+                self.association_context.pop(match.track_id, None)
         elif action == "undo_rejection":
             self.video_matches.undo_rejection(match.track_id, match.person_id)
+        elif action == "associate":
+            self.video_matches.associate(replace(match, status="人工确认", reason=""))
+            self.association_context[match.track_id] = context.copy()
         else:
             self.video_matches.remove_association(match.track_id)
             self.association_context.pop(match.track_id, None)
@@ -1046,6 +1077,7 @@ class MainWindow(QMainWindow):
                 datetime.now().strftime("%H:%M:%S"), track.id, person.id,
                 person.name, person.id_card, 0.0, track.quality, "人工关联",
                 source=self.active_source,
+                has_score=False,
             ))
             self.association_context[track.id] = context
             self._render_matches()
