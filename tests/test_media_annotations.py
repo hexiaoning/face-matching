@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import cv2
-from PySide6.QtCore import QPoint, QPointF
+from PySide6.QtCore import QPoint, QPointF, QItemSelectionModel
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QDialog
 
@@ -16,6 +16,7 @@ from face_matching.gui.export_dialog import AnnotationExportDialog
 from face_matching.gui.main_window import MainWindow, PersonAssociationDialog, VideoWorker
 from face_matching.gui.preview import FacePreview
 from face_matching.gui.person_photos import PersonPhotosDialog
+from face_matching.gui.annotation_compare import AnnotationCompareDialog, source_frame
 from face_matching.matching import MatchResult
 from face_matching.vision.detector import Detection
 from face_matching.vision.io import write_jpeg
@@ -294,3 +295,100 @@ def test_export_dialog_defaults_to_clips_with_independent_people_choices(app):
     dialog.video_mode.setCurrentIndex(1)
     assert not dialog.before.isEnabled()
     dialog.close()
+
+
+def test_annotation_selection_survives_refresh_by_id_and_opens_comparison(tmp_path, monkeypatch, app):
+    monkeypatch.setenv("FACE_MATCHING_HOME", str(tmp_path))
+    window = MainWindow(AppConfig())
+    person = window.database.add_person("Alice", "ID-a", [
+        FaceSampleInput("photo.jpg", np.array([1, 0]), "test", 0.9)
+    ])
+    window.database.log_annotation("s", "missing.jpg", 1, "reject", person, 1)
+    window.database.log_annotation("s", "missing.jpg", 1, "undo_rejection", person, 1)
+    window.refresh_annotations()
+    window.annotation_table.selectRow(1)
+    assert window._selected_annotation_ids() == {1}
+    assert window.library_export_button.text() == "导出选中 1 条…"
+    assert window.annotation_table.item(1, 7).text() == "历史记录"
+    seen = []
+    monkeypatch.setattr(AnnotationCompareDialog, "exec", lambda dialog: seen.append(dialog))
+    window.compare_annotation()
+    assert len(seen) == 1
+    assert seen[0].sample_preview.image.isNull()
+    window.database.log_annotation("s", "missing.jpg", 1, "reject", person, 1)
+    window.refresh_annotations()
+    assert window._selected_annotation_ids() == {1}
+    window.annotation_table.selectionModel().select(window.annotation_table.model().index(0, 0),
+        QItemSelectionModel.Select | QItemSelectionModel.Rows)
+    assert window._selected_annotation_ids() == {1, 3}
+    window.annotation_table.clearSelection()
+    assert not window._selected_annotation_ids()
+    assert window.library_export_button.text() == "导出全部标注…"
+    window.close()
+
+
+def test_annotation_comparison_saved_frame_crop_and_multiple_portraits(tmp_path, monkeypatch, app):
+    monkeypatch.setenv("FACE_MATCHING_HOME", str(tmp_path))
+    database = FaceDatabase(tmp_path / "faces.db")
+    photos = []
+    for index in range(2):
+        path = tmp_path / f"人像{index}.jpg"
+        write_jpeg(path, np.full((100, 80, 3), 40 + index * 100, np.uint8))
+        photos.append(FaceSampleInput(str(path), np.array([1, 0]), "test", 0.9))
+    person = database.add_person("Alice", "ID-a", photos)
+    database.log_annotation("s", "missing-video.mp4", 1, "reject", person, 5,
+        (10, 10, 50, 70), snapshot_path=photos[0].image_path, face_path=photos[1].image_path)
+    parent = FacePreview()
+    dialog = AnnotationCompareDialog(database.list_annotations()[0], database.get_person(person),
+                                      database.list_stored_samples(), parent)
+    dialog.show()
+    app.processEvents()
+    assert dialog.sample_choices.count() == 2
+    assert dialog.sample_preview.image.pixelColor(10, 10).red() > 200
+    dialog.sample_choices.setCurrentIndex(1)
+    assert dialog.sample_preview.image.pixelColor(30, 30).red() > 100
+    dialog.portrait_choices.setCurrentIndex(1)
+    assert dialog.portrait_preview.image.pixelColor(30, 30).red() > 100
+    dialog.resize(1200, 750)
+    app.processEvents()
+    assert not dialog.portrait_preview.pixmap().isNull()
+    dialog.close()
+    parent.close()
+
+
+def test_comparison_falls_back_to_original_image_or_video_frame(tmp_path, app):
+    image_path = tmp_path / "来源图片.webp"
+    write_jpeg(image_path, np.full((48, 64, 3), 70, np.uint8))
+    record = {"source": str(image_path), "frame_index": 1}
+    assert source_frame(record).pixelColor(20, 20).red() == 70
+    video = tmp_path / "来源视频.avi"
+    writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"MJPG"), 10, (64, 48))
+    for value in (30, 80, 150):
+        writer.write(np.full((48, 64, 3), value, np.uint8))
+    writer.release()
+    record.update(source=str(video), frame_index=3)
+    assert abs(source_frame(record).pixelColor(20, 20).red() - 150) < 5
+    record["frame_index"] = 999
+    assert source_frame(record).isNull()
+    record["source"] = "rtsp://camera/live"
+    assert source_frame(record).isNull()
+
+
+def test_export_selection_is_passed_to_worker(tmp_path, monkeypatch, app):
+    monkeypatch.setenv("FACE_MATCHING_HOME", str(tmp_path))
+    window = MainWindow(AppConfig())
+    person = window.database.add_person("Alice", "ID-a", [
+        FaceSampleInput("photo.jpg", np.array([1, 0]), "test", 0.9)
+    ])
+    for track_id in (1, 2):
+        window.database.log_annotation("s", "missing.jpg", track_id, "reject", person, 1)
+    window.refresh_annotations()
+    window.annotation_table.selectRow(1)
+    monkeypatch.setattr(AnnotationExportDialog, "exec", lambda dialog: QDialog.Accepted)
+    monkeypatch.setattr("face_matching.gui.main_window.QFileDialog.getSaveFileName",
+                        lambda *args: (str(tmp_path / "selected.zip"), "ZIP"))
+    monkeypatch.setattr("face_matching.gui.main_window.AnnotationExportWorker.start", lambda worker: None)
+    window.export_annotations()
+    assert window.export_worker.annotation_ids == {1}
+    window._close_export_progress()
+    window.close()

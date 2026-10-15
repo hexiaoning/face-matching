@@ -12,6 +12,7 @@ from typing import Callable
 import cv2
 
 from .database import FaceDatabase
+from .annotations import annotation_states
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +84,8 @@ def export_annotation_library(
     destination: Path,
     options: ExportOptions,
     progress: Callable[[str], None] | None = None,
+    *,
+    annotation_ids: set[int] | None = None,
 ) -> ExportReport:
     if options.seconds_before < 0 or options.seconds_after < 0:
         raise ValueError("片段时长不能为负数")
@@ -91,8 +94,14 @@ def export_annotation_library(
     ):
         raise ValueError("请设置片段前后时长")
     annotations = database.list_annotations()
+    states = annotation_states(annotations)
+    if annotation_ids is not None:
+        available = {item["id"] for item in annotations}
+        if annotation_ids - available:
+            raise ValueError("选中的标注已变化，请刷新后重新选择")
+        annotations = [item for item in annotations if item["id"] in annotation_ids]
     if not annotations:
-        raise ValueError("标注库为空")
+        raise ValueError("没有可导出的标注")
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     issues: list[str] = []
@@ -107,6 +116,7 @@ def export_annotation_library(
                 record = {key: value for key, value in item.items()
                           if key not in {"snapshot_path", "face_path"}}
                 record["bbox"] = json.loads(record["bbox"]) if record["bbox"] else None
+                record.update(states[item["id"]])
                 record["media"] = None
                 if progress:
                     progress(f"导出标注 {len(records) + 1}/{len(annotations)}")
@@ -174,30 +184,18 @@ def export_annotation_library(
                 if options.include_person_info or options.include_portraits:
                     people.append(entry)
             output.writestr("annotations.json", json.dumps(records, ensure_ascii=False, indent=2))
-            # Also provide the effective labels so consumers need not replay undo history.
-            rejected: dict[tuple, int] = {}
-            associated: dict[tuple, int] = {}
-            for record in records:
-                track_key = (record["session_id"], record["track_id"])
-                person_key = track_key + (record["person_id"],)
-                if record["action"] == "reject":
-                    rejected[person_key] = record["id"]
-                elif record["action"] == "undo_rejection":
-                    rejected.pop(person_key, None)
-                elif record["action"] == "associate":
-                    associated[track_key] = record["id"]
-                elif record["action"] == "remove_association":
-                    associated.pop(track_key, None)
-            active_ids = set(rejected.values()) | set(associated.values())
-            current = [record for record in records if record["id"] in active_ids]
+            # Resolve before filtering: selecting an old label must never resurrect it.
+            current = [record for record in records if record["is_current"]]
             output.writestr("current_annotations.json", json.dumps(current, ensure_ascii=False, indent=2))
             if people:
                 output.writestr("people.json", json.dumps(people, ensure_ascii=False, indent=2))
             output.writestr("manifest.json", json.dumps({
-                "format_version": 1, "annotation_count": len(records),
+                "format_version": 2, "annotation_count": len(records),
                 "active_annotation_count": len(current),
+                "scope": "selected" if annotation_ids is not None else "all",
+                "selected_annotation_ids": sorted(annotation_ids) if annotation_ids is not None else None,
                 "options": asdict(options), "issues": issues,
-                "note": "片段无音轨；frame_index 为原视频中从 1 开始的帧号。标注包含操作历史。",
+                "note": "片段无音轨；frame_index 为原视频中从 1 开始的帧号。有效状态依据完整历史计算；current_annotations.json 仅含导出范围内仍有效的标注。superseded_by 可引用未选中、未导出的后续操作。",
             }, ensure_ascii=False, indent=2))
         os.replace(archive, destination)
     return ExportReport(len(annotations), tuple(issues))

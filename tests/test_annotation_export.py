@@ -155,3 +155,75 @@ def test_effective_annotations_replay_undo_and_separate_sessions(library, tmp_pa
     assert len(current) == 1
     assert current[0]["session_id"] == "s2"
     assert current[0]["action"] == "associate"
+
+
+@pytest.mark.parametrize("selected,active", [({1}, []), ({2}, []), ({3}, [3]),
+                                                  ({1, 3}, [3]), ({4}, []), ({5}, [5])])
+def test_selected_export_resolves_against_unselected_history(library, tmp_path, selected, active):
+    database, person, portrait, video = library
+    other = database.add_person("Bob", "ID-002", [
+        FaceSampleInput(str(portrait), np.array([0, 1]), "model", 0.9)
+    ])
+    database.log_annotation("s1", str(video), 1, "remove_association", person, 15)
+    database.log_annotation("s1", str(video), 1, "associate", other, 15)
+    database.log_annotation("s1", str(video), 1, "reject", person, 15)
+    database.log_annotation("s2", str(video), 1, "reject", person, 15)
+    database.log_annotation("s1", str(video), 1, "undo_rejection", person, 15)
+    target = tmp_path / "selected.zip"
+    report = export_annotation_library(database, target, ExportOptions(include_media=False),
+                                       annotation_ids=selected)
+    files = read_export(target)
+    records = json.loads(files["annotations.json"])
+    assert {record["id"] for record in records} == selected
+    assert [record["id"] for record in json.loads(files["current_annotations.json"])] == active
+    assert report.annotation_count == len(selected)
+    people = json.loads(files["people.json"])
+    assert {entry["person_id"] for entry in people} == {record["person_id"] for record in records}
+    manifest = json.loads(files["manifest.json"])
+    assert manifest["scope"] == "selected"
+    assert manifest["selected_annotation_ids"] == sorted(selected)
+    assert manifest["active_annotation_count"] == len(active)
+    if 1 in selected:
+        assert records[0]["is_current"] is False
+        assert records[0]["superseded_by"] == 2
+
+
+@pytest.mark.parametrize("selected", [set(), {999}])
+def test_invalid_or_empty_selection_does_not_export_everything(library, tmp_path, selected):
+    database, *_ = library
+    target = tmp_path / "keep.zip"
+    target.write_bytes(b"keep")
+    with pytest.raises(ValueError):
+        export_annotation_library(database, target, ExportOptions(), annotation_ids=selected)
+    assert target.read_bytes() == b"keep"
+
+
+def test_selected_export_copies_only_selected_media(library, tmp_path):
+    database, person, portrait, _ = library
+    database.log_annotation("image", str(portrait), 1, "reject", person, 1,
+                            face_path=str(portrait))
+    target = tmp_path / "image-only.zip"
+    export_annotation_library(database, target, ExportOptions(), annotation_ids={2})
+    files = read_export(target)
+    assert not any(name.endswith(".mp4") for name in files)
+    assert "annotations/2-face.jpg" in files
+    assert json.loads(files["annotations.json"])[0]["media"]["mode"] == "image"
+
+
+def test_selection_does_not_revive_replaced_association_or_old_rejection(library, tmp_path):
+    database, person, portrait, video = library
+    other = database.add_person("Bob", "ID-002", [
+        FaceSampleInput(str(portrait), np.array([0, 1]), "model", 0.9)
+    ])
+    database.log_annotation("s1", str(video), 1, "associate", other, 15)
+    database.log_annotation("s1", str(video), 1, "reject", person, 15)
+    database.log_annotation("s1", str(video), 1, "undo_rejection", person, 15)
+    database.log_annotation("s1", str(video), 1, "reject", person, 15)
+    target = tmp_path / "replacement.zip"
+    export_annotation_library(database, target, ExportOptions(include_media=False),
+                               annotation_ids={1, 2, 3, 5})
+    files = read_export(target)
+    assert [record["id"] for record in json.loads(files["current_annotations.json"])] == [2, 5]
+    records = {record["id"]: record for record in json.loads(files["annotations.json"])}
+    assert records[1]["superseded_by"] == 2
+    assert records[3]["superseded_by"] == 4

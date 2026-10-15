@@ -12,12 +12,17 @@ from ..database import FaceDatabase
 
 
 class AnnotationExportDialog(QDialog):
-    def __init__(self, count: int, parent: QWidget) -> None:
+    def __init__(self, count: int, parent: QWidget, *, selected: bool = False) -> None:
         super().__init__(parent)
         self.setWindowTitle("导出标注库")
         self.resize(480, 330)
         form = QFormLayout(self)
-        form.addRow(QLabel(f"导出全部 {count} 条标注及操作历史（ZIP）"))
+        self.scope_label = QLabel(f"导出{'选中的' if selected else '全部'} {count} 条标注及操作历史（ZIP）")
+        form.addRow(self.scope_label)
+        if selected:
+            note = QLabel("有效状态依据完整历史判断；已撤销或替换的记录仅作历史导出，不计入有效标注。")
+            note.setWordWrap(True)
+            form.addRow(note)
         self.media = QCheckBox("导出来源图片 / 视频及标注画面")
         self.media.setChecked(True)
         form.addRow(self.media)
@@ -70,14 +75,17 @@ class AnnotationExportWorker(QThread):
     succeeded = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, database: FaceDatabase, path: Path, options: ExportOptions) -> None:
+    def __init__(self, database: FaceDatabase, path: Path, options: ExportOptions,
+                 annotation_ids: set[int] | None = None) -> None:
         super().__init__()
         self.database, self.path, self.options = database, path, options
+        self.annotation_ids = set(annotation_ids) if annotation_ids is not None else None
 
     def run(self) -> None:
         try:
             self.succeeded.emit(export_annotation_library(
-                self.database, self.path, self.options, self.progress.emit
+                self.database, self.path, self.options, self.progress.emit,
+                annotation_ids=self.annotation_ids,
             ))
         except Exception as exc:
             self.failed.emit(str(exc))

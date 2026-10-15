@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 
 from .. import __version__
 from ..annotation_export import ExportReport
+from ..annotations import annotation_states
 from ..config import AppConfig
 from ..database import FaceDatabase, PersonRecord
 from ..engine import FaceEngine, FrameResult, TrackView
@@ -52,6 +53,7 @@ from ..vision.io import is_image_source, is_image_data_uri, read_image, store_im
 from .preview import FacePreview, draw_tracks
 from .export_dialog import AnnotationExportDialog, AnnotationExportWorker
 from .person_photos import PersonPhotosDialog
+from .annotation_compare import AnnotationCompareDialog
 
 
 def _rate_limit_due(last_emitted_at: float | None, now: float, interval: float) -> bool:
@@ -505,21 +507,30 @@ class MainWindow(QMainWindow):
     def _build_annotations_tab(self) -> None:
         tab = QWidget()
         self.tabs.addTab(tab, "标注库")
-        self.annotation_table = QTableWidget(0, 7)
+        self.annotation_table = QTableWidget(0, 8)
         self.annotation_table.setHorizontalHeaderLabels([
-            "标注时间", "来源", "轨迹", "帧号", "姓名", "身份证号", "操作"
+            "标注时间", "来源", "轨迹", "帧号", "姓名", "身份证号", "操作", "状态"
         ])
         self.annotation_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.annotation_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.annotation_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.annotation_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.annotation_table.setSelectionMode(QTableWidget.ExtendedSelection)
+        self.annotation_table.cellDoubleClicked.connect(lambda row, column: self.compare_annotation())
+        self.annotation_table.itemSelectionChanged.connect(self._update_annotation_selection)
         self.annotation_count = QLabel("标注会保存在本地，重新启动后仍可查看和导出。")
         refresh = QPushButton("刷新")
         refresh.clicked.connect(self.refresh_annotations)
+        compare = QPushButton("查看样本对比…")
+        compare.clicked.connect(self.compare_annotation)
+        clear = QPushButton("取消选择")
+        clear.clicked.connect(self.annotation_table.clearSelection)
         self.library_export_button = QPushButton("导出标注库…")
         self.library_export_button.clicked.connect(self.export_annotations)
         row = QHBoxLayout()
         row.addWidget(self.annotation_count, 1)
+        row.addWidget(compare)
+        row.addWidget(clear)
         row.addWidget(refresh)
         row.addWidget(self.library_export_button)
         layout = QVBoxLayout(tab)
@@ -528,8 +539,13 @@ class MainWindow(QMainWindow):
         self.refresh_annotations()
 
     def refresh_annotations(self) -> None:
+        selected = self._selected_annotation_ids()
         annotations = self.database.list_annotations()
+        states = annotation_states(annotations)
+        self.annotation_records = {record["id"]: record for record in annotations}
         people = {person.id: person for person in self.database.list_people()}
+        self.annotation_table.blockSignals(True)
+        self.annotation_table.clearSelection()
         self.annotation_table.setRowCount(len(annotations))
         labels = {"reject": "不是此人", "associate": "关联人员",
                   "undo_rejection": "撤销标注", "remove_association": "取消关联"}
@@ -540,12 +556,44 @@ class MainWindow(QMainWindow):
                 record["source"], f"#{record['track_id']}", str(record["frame_index"]),
                 person.name if person else "人员已删除", person.id_card if person else "",
                 labels[record["action"]],
+                "有效" if states[record["id"]]["is_current"] else "历史记录",
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 item.setToolTip(value)
+                item.setData(Qt.UserRole, record["id"])
                 self.annotation_table.setItem(row, column, item)
-        self.annotation_count.setText(f"共 {len(annotations)} 条标注及操作历史 · 已保存至本地")
+                item.setSelected(record["id"] in selected)
+        self.annotation_table.blockSignals(False)
+        self._update_annotation_selection()
+
+    def _selected_annotation_ids(self) -> set[int]:
+        return {self.annotation_table.item(index.row(), 0).data(Qt.UserRole)
+                for index in self.annotation_table.selectionModel().selectedRows()
+                if self.annotation_table.item(index.row(), 0) is not None}
+
+    def _update_annotation_selection(self) -> None:
+        if not hasattr(self, "library_export_button"):
+            return
+        count = len(self._selected_annotation_ids())
+        self.library_export_button.setText(f"导出选中 {count} 条…" if count else "导出全部标注…")
+        self.annotation_count.setText(
+            f"共 {self.annotation_table.rowCount()} 条记录 · 已选 {count} 条 · Ctrl / Shift 多选，未选择时导出全部"
+        )
+
+    def compare_annotation(self) -> None:
+        row = self.annotation_table.currentRow()
+        item = self.annotation_table.item(row, 0) if row >= 0 else None
+        if item is None:
+            QMessageBox.information(self, "请选择标注", "请选择一条标注查看样本对比，也可双击标注行。")
+            return
+        record = self.annotation_records.get(item.data(Qt.UserRole))
+        if record is None:
+            return
+        person = self.database.get_person(record["person_id"]) if record["person_id"] else None
+        samples = [sample for sample in self.database.list_stored_samples()
+                   if sample.person_id == record["person_id"]]
+        AnnotationCompareDialog(record, person, samples, self).exec()
 
     def _build_settings_tab(self) -> None:
         tab = QWidget()
@@ -882,11 +930,12 @@ class MainWindow(QMainWindow):
     def export_annotations(self) -> None:
         if self.export_worker and self.export_worker.isRunning():
             return
-        count = len(self.database.list_annotations())
+        annotation_ids = self._selected_annotation_ids() or None
+        count = len(annotation_ids) if annotation_ids is not None else len(self.database.list_annotations())
         if not count:
             QMessageBox.information(self, "标注库为空", "请先标注匹配结果或关联人员。")
             return
-        dialog = AnnotationExportDialog(count, self)
+        dialog = AnnotationExportDialog(count, self, selected=annotation_ids is not None)
         if dialog.exec() != QDialog.Accepted:
             return
         options = dialog.options()
@@ -906,7 +955,7 @@ class MainWindow(QMainWindow):
         self.export_progress.show()
         self.export_button.setEnabled(False)
         self.library_export_button.setEnabled(False)
-        self.export_worker = AnnotationExportWorker(self.database, Path(path), options)
+        self.export_worker = AnnotationExportWorker(self.database, Path(path), options, annotation_ids)
         self.export_worker.progress.connect(self.export_progress.setLabelText)
         self.export_worker.succeeded.connect(self._export_succeeded)
         self.export_worker.failed.connect(self._export_failed)
