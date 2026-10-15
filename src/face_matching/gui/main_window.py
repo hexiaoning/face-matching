@@ -582,12 +582,16 @@ class MainWindow(QMainWindow):
         )
 
     def compare_annotation(self) -> None:
+        selected = self._selected_annotation_ids()
         row = self.annotation_table.currentRow()
         item = self.annotation_table.item(row, 0) if row >= 0 else None
-        if item is None:
+        if not selected:
             QMessageBox.information(self, "请选择标注", "请选择一条标注查看样本对比，也可双击标注行。")
             return
-        record = self.annotation_records.get(item.data(Qt.UserRole))
+        identifier = item.data(Qt.UserRole) if item is not None else None
+        if identifier not in selected:
+            identifier = max(selected)
+        record = self.annotation_records.get(identifier)
         if record is None:
             return
         person = self.database.get_person(record["person_id"]) if record["person_id"] else None

@@ -318,6 +318,8 @@ def test_annotation_selection_survives_refresh_by_id_and_opens_comparison(tmp_pa
     window.database.log_annotation("s", "missing.jpg", 1, "reject", person, 1)
     window.refresh_annotations()
     assert window._selected_annotation_ids() == {1}
+    window.compare_annotation()
+    assert seen[-1].windowTitle() == "标注样本对比 · #1"
     window.annotation_table.selectionModel().select(window.annotation_table.model().index(0, 0),
         QItemSelectionModel.Select | QItemSelectionModel.Rows)
     assert window._selected_annotation_ids() == {1, 3}
