@@ -2,11 +2,11 @@
 setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
-title Face Matching v2.5.2 - Install and Start
+title Face Matching v2.6.1 - Install and Start
 
 echo ============================================================
-echo Face Matching Offline Bundle v2.5.2
-echo Build marker: QT-ICU-FIX-20261014
+echo Face Matching Offline Bundle v2.6.1
+echo Build marker: IMAGE-CANDIDATE-PHOTOS-FIX-20261015
 echo ============================================================
 echo.
 

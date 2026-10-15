@@ -17,6 +17,10 @@ class MatchResult:
     score: float
     second_score: float
     margin: float
+    candidate_person_id: str | None = None
+    candidate_name: str = ""
+    candidate_id_card: str = ""
+    rejection_reason: str = ""
 
 
 @dataclass(slots=True)
@@ -131,7 +135,15 @@ class GalleryMatcher:
         margin = best_score - second_score if len(order) > 1 else 1.0
         accepted = best_score >= threshold and margin >= min_margin
         if not accepted:
-            return MatchResult(False, None, "陌生人", "", best_score, second_score, margin)
+            reason = (
+                f"相似度 {best_score:.3f} 低于确认阈值 {threshold:.3f}"
+                if best_score < threshold else
+                f"第一、第二候选差值 {margin:.3f} 小于要求 {min_margin:.3f}"
+            )
+            return MatchResult(
+                False, None, "陌生人", "", best_score, second_score, margin,
+                best_identity.person_id, best_identity.name, best_identity.id_card, reason,
+            )
         return MatchResult(
             True,
             best_identity.person_id,
@@ -140,6 +152,9 @@ class GalleryMatcher:
             best_score,
             second_score,
             margin,
+            best_identity.person_id,
+            best_identity.name,
+            best_identity.id_card,
         )
 
     def match(self, embedding: np.ndarray) -> MatchResult:
@@ -232,4 +247,8 @@ class GalleryMatcher:
             result.score,
             result.second_score,
             result.margin,
+            result.candidate_person_id,
+            result.candidate_name,
+            result.candidate_id_card,
+            result.rejection_reason or "独立视频帧支持不足，等待人工确认",
         )

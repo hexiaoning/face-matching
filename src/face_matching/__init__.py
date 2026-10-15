@@ -1,3 +1,3 @@
-"""GPU-only video face matching desktop application."""
+"""GPU-only image and video face matching desktop application."""
 
-__version__ = "2.5.2"
+__version__ = "2.6.1"

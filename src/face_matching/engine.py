@@ -35,6 +35,11 @@ class TrackView:
     score: float
     quality: float
     observations: int
+    annotation: str = ""
+    candidate_person_id: str | None = None
+    candidate_name: str = ""
+    candidate_id_card: str = ""
+    match_reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,7 +130,14 @@ class FaceEngine:
             detection,
         )
 
-    def process_frame(self, frame: np.ndarray, frame_index: int) -> FrameResult:
+    def process_image(self, image: np.ndarray) -> FrameResult:
+        """Match every usable face once, without video temporal confirmation."""
+        self.reset_video()
+        return self.process_frame(image, 1, single_frame=True)
+
+    def process_frame(
+        self, frame: np.ndarray, frame_index: int, *, single_frame: bool = False
+    ) -> FrameResult:
         detections = self.detector.detect(frame)
         observations: list[Observation] = []
         aligned_faces: list[np.ndarray] = []
@@ -180,7 +192,8 @@ class FaceEngine:
             )
         tracks = self.tracker.update(observations, frame_index)
         for track in tracks:
-            if len(track.observations) < self.config.min_track_observations:
+            minimum = 1 if single_frame else self.config.min_track_observations
+            if len(track.observations) < minimum:
                 continue
             if track.embedding_version == track.matched_embedding_version:
                 continue
@@ -191,18 +204,25 @@ class FaceEngine:
             if aggregate is not None:
                 track.apply_match(
                     self.matcher.match_track(aggregate, track.matching_observations),
-                    consensus=self.config.confirmation_matches,
+                    consensus=1 if single_frame else self.config.confirmation_matches,
                 )
         views = tuple(
             TrackView(
                 id=track.id,
                 bbox=tuple(float(value) for value in track.bbox),
-                name=track.name,
+                name=(f"待确认：{track.last_match.candidate_name}"
+                      if track.person_id is None and track.last_match
+                      and track.last_match.candidate_person_id else track.name),
                 person_id=track.person_id,
                 id_card=track.id_card,
                 score=track.score,
                 quality=track.quality,
                 observations=len(track.observations),
+                candidate_person_id=track.last_match.candidate_person_id if track.last_match else None,
+                candidate_name=track.last_match.candidate_name if track.last_match else "",
+                candidate_id_card=track.last_match.candidate_id_card if track.last_match else "",
+                match_reason=(track.last_match.rejection_reason or "等待多帧确认")
+                if track.last_match and track.person_id is None else "",
             )
             for track in tracks
         )

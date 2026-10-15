@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
 from dataclasses import dataclass
@@ -95,6 +96,26 @@ class FaceDatabase:
                     quality REAL NOT NULL,
                     occurred_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS recognition_annotations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    track_id INTEGER NOT NULL,
+                    frame_index INTEGER NOT NULL,
+                    bbox TEXT,
+                    snapshot_path TEXT,
+                    face_path TEXT,
+                    score REAL,
+                    quality REAL,
+                    model_id TEXT,
+                    action TEXT NOT NULL CHECK(action IN (
+                        'reject', 'associate', 'undo_rejection', 'remove_association'
+                    )),
+                    person_id TEXT REFERENCES persons(id) ON DELETE SET NULL,
+                    occurred_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_annotations_session
+                    ON recognition_annotations(session_id, track_id);
                 """
             )
 
@@ -286,3 +307,40 @@ class FaceDatabase:
                    ) VALUES(?,?,?,?,?,?)""",
                 (person_id, source, int(track_id), float(score), float(quality), _now()),
             )
+
+    def log_annotation(
+        self,
+        session_id: str,
+        source: str,
+        track_id: int,
+        action: str,
+        person_id: str,
+        frame_index: int = 0,
+        bbox: tuple[float, float, float, float] | None = None,
+        snapshot_path: str | None = None,
+        face_path: str | None = None,
+        *,
+        score: float | None = None,
+        quality: float | None = None,
+        model_id: str | None = None,
+    ) -> None:
+        if action not in {"reject", "associate", "undo_rejection", "remove_association"}:
+            raise ValueError("未知标注操作")
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO recognition_annotations(
+                       session_id, source, track_id, frame_index, bbox, snapshot_path, face_path,
+                       score, quality, model_id, action,
+                       person_id, occurred_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (session_id, source, int(track_id), int(frame_index),
+                 json.dumps(bbox) if bbox is not None else None,
+                 snapshot_path, face_path, score, quality, model_id, action, person_id, _now()),
+            )
+
+    def list_annotations(self) -> list[dict]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM recognition_annotations ORDER BY id"
+            ).fetchall()
+        return [dict(row) for row in rows]

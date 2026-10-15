@@ -131,5 +131,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="FaceMatching-v2.5.2-windows-x64",
+    name="FaceMatching-v2.6.1-windows-x64",
 )

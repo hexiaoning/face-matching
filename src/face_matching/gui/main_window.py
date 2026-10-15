@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import time
+import uuid
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
 import cv2
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -22,6 +24,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressDialog,
     QPushButton,
@@ -35,16 +38,20 @@ from PySide6.QtWidgets import (
 )
 
 from .. import __version__
+from ..annotation_export import ExportReport
 from ..config import AppConfig
 from ..database import FaceDatabase, PersonRecord
-from ..engine import FaceEngine, FrameResult
+from ..engine import FaceEngine, FrameResult, TrackView
 from ..enrollment import EnrollmentService
 from ..errors import FaceMatchingError, ModelMissingError
 from ..gpu import assert_gpu_available
 from ..models import PROFILES, available_profiles, download_profile, profile_spec, required_paths
 from ..paths import is_frozen_app
-from ..results import VideoMatchList
-from ..vision.io import read_image
+from ..results import VideoMatch, VideoMatchList
+from ..vision.io import is_image_source, is_image_data_uri, read_image, store_image_data_uri
+from .preview import FacePreview, draw_tracks
+from .export_dialog import AnnotationExportDialog, AnnotationExportWorker
+from .person_photos import PersonPhotosDialog
 
 
 def _rate_limit_due(last_emitted_at: float | None, now: float, interval: float) -> bool:
@@ -125,11 +132,59 @@ class PersonInfoDialog(QDialog):
         form.addRow(buttons)
 
 
+class PersonAssociationDialog(QDialog):
+    def __init__(self, people: list[PersonRecord], parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("关联已录入人员")
+        self.resize(620, 440)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("搜索姓名或身份证号")
+        self.people = people
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["姓名", "身份证号"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.confirm = buttons.button(QDialogButtonBox.Ok)
+        self.confirm.setText("关联")
+        buttons.button(QDialogButtonBox.Cancel).setText("取消")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        self.search.textChanged.connect(self._filter)
+        self.table.itemSelectionChanged.connect(
+            lambda: self.confirm.setEnabled(self.table.currentRow() >= 0)
+        )
+        self.table.cellDoubleClicked.connect(lambda row, column: self.accept())
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("选择此人对应的人员库记录："))
+        layout.addWidget(self.search)
+        layout.addWidget(self.table)
+        layout.addWidget(buttons)
+        self._filter("")
+
+    def _filter(self, query: str) -> None:
+        query = query.strip().casefold()
+        self.filtered = [p for p in self.people
+                         if query in p.name.casefold() or query in p.id_card.casefold()]
+        self.table.setRowCount(0)
+        self.table.setRowCount(len(self.filtered))
+        for row, person in enumerate(self.filtered):
+            self.table.setItem(row, 0, QTableWidgetItem(person.name))
+            self.table.setItem(row, 1, QTableWidgetItem(person.id_card))
+        self.confirm.setEnabled(False)
+
+    def selected_person(self) -> PersonRecord | None:
+        row = self.table.currentRow()
+        return self.filtered[row] if row >= 0 else None
+
+
 class VideoWorker(QThread):
     PREVIEW_INTERVAL_SECONDS = 1.0 / 15.0
     STATS_INTERVAL_SECONDS = 1.0
 
-    frame_ready = Signal(QImage)
+    frame_ready = Signal(QImage, object, int)
     recognized = Signal(dict)
     stats = Signal(str)
     failed = Signal(str)
@@ -140,6 +195,7 @@ class VideoWorker(QThread):
         self.source = source
         self.frame_interval = max(1, int(frame_interval))
         self._running = True
+        self.had_error = False
 
     def stop(self) -> None:
         self._running = False
@@ -148,29 +204,64 @@ class VideoWorker(QThread):
     def _qimage(frame: object, result: FrameResult | None) -> QImage:
         height, width = frame.shape[:2]
         image = QImage(frame.data, width, height, frame.strides[0], QImage.Format_BGR888).copy()
-        if result is None:
-            return image
-        painter = QPainter(image)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setFont(QFont("Microsoft YaHei UI", max(10, int(height / 55))))
+        return draw_tracks(image, result) if result else image
+
+    def _report_matches(
+        self, result: FrameResult, reported_scores: dict[tuple[int, str, bool], float], frame_index: int,
+        frame: object,
+    ) -> None:
         for track in result.tracks:
-            x1, y1, x2, y2 = (int(value) for value in track.bbox)
-            known = track.person_id is not None
-            color = QColor("#39d98a" if known else "#ffb020")
-            painter.setPen(QPen(color, max(2, int(height / 360))))
-            painter.drawRect(x1, y1, max(1, x2 - x1), max(1, y2 - y1))
-            label = f"#{track.id} {track.name}  {track.score:.2f}  Q:{track.quality:.2f}"
-            metrics = painter.fontMetrics()
-            label_width = metrics.horizontalAdvance(label) + 12
-            label_height = metrics.height() + 6
-            top = max(0, y1 - label_height)
-            painter.fillRect(x1, top, label_width, label_height, QColor(0, 0, 0, 185))
-            painter.setPen(color)
-            painter.drawText(x1 + 6, top + metrics.ascent() + 3, label)
-        painter.end()
-        return image
+            confirmed = track.person_id is not None
+            person_id = track.person_id or track.candidate_person_id
+            key = (track.id, person_id or "", confirmed)
+            previous_score = reported_scores.get(key)
+            if person_id and (previous_score is None or track.score > previous_score + 1e-6):
+                reported_scores[key] = track.score
+                height, width = frame.shape[:2]
+                x1, y1, x2, y2 = track.bbox
+                crop = frame[max(0, int(y1)):min(height, int(y2)),
+                             max(0, int(x1)):min(width, int(x2))]
+                face_jpeg = None
+                if crop.size:
+                    ok, encoded = cv2.imencode(".jpg", crop)
+                    if ok:
+                        face_jpeg = encoded.tobytes()
+                self.recognized.emit({
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "track_id": track.id, "person_id": person_id,
+                    "name": track.name if confirmed else track.candidate_name,
+                    "id_card": track.id_card if confirmed else track.candidate_id_card,
+                    "confirmed": confirmed, "status": "自动匹配" if confirmed else "待确认",
+                    "reason": track.match_reason,
+                    "score": track.score, "quality": track.quality,
+                    "frame_index": frame_index, "bbox": track.bbox,
+                    "face_jpeg": face_jpeg,
+                    "new_track_match": previous_score is None,
+                })
+
+    def _fail(self, message: str) -> None:
+        self.had_error = True
+        self.failed.emit(message)
 
     def run(self) -> None:
+        if is_image_source(self.source):
+            try:
+                image = read_image(self.source)
+                if image is None:
+                    label = "图片数据无效或不完整" if is_image_data_uri(self.source) else self.source
+                    raise ValueError(f"无法读取图片：{label}")
+                if not self._running:
+                    return
+                result = self.engine.process_image(image)
+                self._report_matches(result, {}, 1, image)
+                self.frame_ready.emit(self._qimage(image, None), result, 1)
+                self.stats.emit(
+                    f"图片识别完成 · 检测到 {result.detected_faces} 张人脸 · "
+                    f"可用于匹配 {result.usable_faces} 张"
+                )
+            except Exception as exc:
+                self._fail(str(exc))
+            return
         capture_source: str | int = self.source
         if self.source.isdigit() and not Path(self.source).exists():
             capture_source = int(self.source)
@@ -184,13 +275,14 @@ class VideoWorker(QThread):
         capture.open(capture_source)
         capture.set(cv2.CAP_PROP_BUFFERSIZE, 2)
         if not capture.isOpened():
-            self.failed.emit(f"无法打开视频源: {self.source}")
+            capture.release()
+            self._fail(f"无法打开视频源: {self.source}")
             return
         self.engine.reset_video()
         frame_index = 0
         last_frame: object | None = None
         last_result: FrameResult | None = None
-        reported_scores: dict[tuple[int, str], float] = {}
+        reported_scores: dict[tuple[int, str, bool], float] = {}
         started = time.perf_counter()
         last_preview_at: float | None = None
         last_preview_frame_index = 0
@@ -206,29 +298,10 @@ class VideoWorker(QThread):
                 last_frame = frame
                 if frame_index == 1 or frame_index % self.frame_interval == 0:
                     last_result = self.engine.process_frame(frame, frame_index)
-                    for track in last_result.tracks:
-                        key = (track.id, track.person_id or "")
-                        previous_score = reported_scores.get(key)
-                        if (
-                            track.person_id
-                            and (previous_score is None or track.score > previous_score + 1e-6)
-                        ):
-                            reported_scores[key] = track.score
-                            self.recognized.emit(
-                                {
-                                    "time": datetime.now().strftime("%H:%M:%S"),
-                                    "track_id": track.id,
-                                    "person_id": track.person_id,
-                                    "name": track.name,
-                                    "id_card": track.id_card,
-                                    "score": track.score,
-                                    "quality": track.quality,
-                                    "new_track_match": previous_score is None,
-                                }
-                            )
+                    self._report_matches(last_result, reported_scores, frame_index, frame)
                 now = time.perf_counter()
                 if _rate_limit_due(last_preview_at, now, self.PREVIEW_INTERVAL_SECONDS):
-                    self.frame_ready.emit(self._qimage(frame, last_result))
+                    self.frame_ready.emit(self._qimage(frame, None), last_result, frame_index)
                     last_preview_at = now
                     last_preview_frame_index = frame_index
                 if _rate_limit_due(last_stats_at, now, self.STATS_INTERVAL_SECONDS):
@@ -240,9 +313,9 @@ class VideoWorker(QThread):
                 last_frame is not None
                 and _final_preview_due(reached_end, frame_index, last_preview_frame_index)
             ):
-                self.frame_ready.emit(self._qimage(last_frame, last_result))
+                self.frame_ready.emit(self._qimage(last_frame, None), last_result, frame_index)
         except Exception as exc:
-            self.failed.emit(str(exc))
+            self._fail(str(exc))
         finally:
             capture.release()
 
@@ -255,13 +328,24 @@ class MainWindow(QMainWindow):
         self.engine: FaceEngine | None = None
         self.enrollment: EnrollmentService | None = None
         self.worker: VideoWorker | None = None
+        self.export_worker: AnnotationExportWorker | None = None
+        self.export_progress: QProgressDialog | None = None
         self.video_matches = VideoMatchList()
-        self.setWindowTitle(f"Face Matching v{__version__} · GPU 视频人脸比对")
+        self.session_id = ""
+        self.active_source = ""
+        self.preview_image = QImage()
+        self.preview_result: FrameResult | None = None
+        self.preview_frame_index = 0
+        self.match_context: dict[tuple[int, str], dict] = {}
+        self.association_context: dict[int, dict] = {}
+        self._reviewing = False
+        self.setWindowTitle(f"Face Matching v{__version__} · GPU 图片 / 视频人脸检索")
         self.resize(1420, 880)
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
         self._build_video_tab()
         self._build_people_tab()
+        self._build_annotations_tab()
         self._build_settings_tab()
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage("正在检查 GPU…")
@@ -276,7 +360,7 @@ class MainWindow(QMainWindow):
             except ModelMissingError:
                 if is_frozen_app():
                     raise ModelMissingError(
-                        "离线便携包缺少当前模型。请使用完整的 v2.5 离线包，"
+                        "离线便携包缺少当前模型。请使用完整的 v2.6 离线包，"
                         "或在联网构建机上重新打包；目标机不会尝试联网下载。"
                     )
                 profile = profile_spec(self.config.model_profile)
@@ -300,6 +384,7 @@ class MainWindow(QMainWindow):
             )
             self._set_video_enabled(True)
             self.refresh_people()
+            self.refresh_annotations()
             if self.database.list_stored_samples() and self.engine.matcher.person_count == 0:
                 QMessageBox.warning(
                     self,
@@ -335,10 +420,12 @@ class MainWindow(QMainWindow):
 
     def _build_video_tab(self) -> None:
         tab = QWidget()
-        self.tabs.addTab(tab, "视频识别")
+        self.tabs.addTab(tab, "人脸检索")
         self.source_edit = QLineEdit()
-        self.source_edit.setPlaceholderText("视频文件、RTSP/RTMP 地址，或摄像头编号（例如 0）")
-        browse = QPushButton("选择视频…")
+        self.source_edit.setMaxLength(16 * 1024 * 1024)
+        self.source_edit.setPlaceholderText("图片 / 视频文件、RTSP/RTMP 地址，或摄像头编号（例如 0）")
+        self.browse_button = QPushButton("选择图片 / 视频…")
+        browse = self.browse_button
         camera = QPushButton("摄像头 0")
         self.start_button = QPushButton("开始识别")
         self.stop_button = QPushButton("停止")
@@ -347,27 +434,37 @@ class MainWindow(QMainWindow):
         self.start_button.clicked.connect(self.start_video)
         self.stop_button.clicked.connect(self.stop_video)
         source_row = QHBoxLayout()
-        source_row.addWidget(QLabel("视频源："))
+        source_row.addWidget(QLabel("检索来源："))
         source_row.addWidget(self.source_edit, 1)
         source_row.addWidget(browse)
         source_row.addWidget(camera)
         source_row.addWidget(self.start_button)
         source_row.addWidget(self.stop_button)
-        self.video_label = QLabel("选择视频、输入 RTSP 地址或使用摄像头 0")
-        self.video_label.setAlignment(Qt.AlignCenter)
-        self.video_label.setMinimumSize(880, 540)
-        self.video_label.setStyleSheet("background:#111820;color:#8fa3b8;border-radius:8px;")
-        self.events = QTableWidget(0, 6)
-        self.events.setHorizontalHeaderLabels(["时间", "轨迹", "姓名", "身份证号", "相似度", "质量"])
-        self.events.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.video_label = FacePreview()
+        self.video_label.track_context_requested.connect(self._track_menu)
+        self.events = QTableWidget(0, 8)
+        self.events.setHorizontalHeaderLabels([
+            "时间", "轨迹", "姓名", "身份证号", "相似度", "质量", "标注", "操作"
+        ])
+        self.events.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.events.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.events.horizontalHeader().setMinimumSectionSize(58)
+        self.events.setSelectionBehavior(QTableWidget.SelectRows)
         self.events.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.events.setToolTip("每人保留整段视频中的最高分，按相似度从高到低排列")
+        self.events.setToolTip("人工关联和自动确认优先；相似候选列为待确认，悬停可查看原因。“不是此人”针对该行轨迹。")
         body = QHBoxLayout()
         body.addWidget(self.video_label, 3)
         body.addWidget(self.events, 2)
         layout = QVBoxLayout(tab)
         layout.addLayout(source_row)
         layout.addLayout(body, 1)
+        hint = QHBoxLayout()
+        hint.addWidget(QLabel("待确认为相似候选，需人工核实；右键人脸框关联人员，右侧可标注“不是此人”。"))
+        hint.addStretch()
+        self.export_button = QPushButton("导出标注库…")
+        self.export_button.clicked.connect(self.export_annotations)
+        hint.addWidget(self.export_button)
+        layout.addLayout(hint)
         self._set_video_enabled(False)
 
     def _set_video_enabled(self, ready: bool) -> None:
@@ -385,22 +482,70 @@ class MainWindow(QMainWindow):
         add = QPushButton("录入人员…")
         edit = QPushButton("编辑信息…")
         photos = QPushButton("添加照片…")
+        view_photos = QPushButton("查看照片…")
         rebuild = QPushButton("重建当前模型特征")
         delete = QPushButton("删除人员")
         refresh = QPushButton("刷新")
         add.clicked.connect(self.add_person)
         edit.clicked.connect(self.edit_person)
         photos.clicked.connect(self.add_photos)
+        view_photos.clicked.connect(self.view_person_photos)
+        self.people_table.cellDoubleClicked.connect(lambda row, column: self.view_person_photos())
         rebuild.clicked.connect(self.rebuild_features)
         delete.clicked.connect(self.delete_person)
         refresh.clicked.connect(self.refresh_people)
         row = QHBoxLayout()
-        for button in (add, edit, photos, rebuild, delete, refresh):
+        for button in (add, edit, view_photos, photos, rebuild, delete, refresh):
             row.addWidget(button)
         row.addStretch()
         layout = QVBoxLayout(tab)
         layout.addLayout(row)
         layout.addWidget(self.people_table)
+
+    def _build_annotations_tab(self) -> None:
+        tab = QWidget()
+        self.tabs.addTab(tab, "标注库")
+        self.annotation_table = QTableWidget(0, 7)
+        self.annotation_table.setHorizontalHeaderLabels([
+            "标注时间", "来源", "轨迹", "帧号", "姓名", "身份证号", "操作"
+        ])
+        self.annotation_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.annotation_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.annotation_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.annotation_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.annotation_count = QLabel("标注会保存在本地，重新启动后仍可查看和导出。")
+        refresh = QPushButton("刷新")
+        refresh.clicked.connect(self.refresh_annotations)
+        self.library_export_button = QPushButton("导出标注库…")
+        self.library_export_button.clicked.connect(self.export_annotations)
+        row = QHBoxLayout()
+        row.addWidget(self.annotation_count, 1)
+        row.addWidget(refresh)
+        row.addWidget(self.library_export_button)
+        layout = QVBoxLayout(tab)
+        layout.addLayout(row)
+        layout.addWidget(self.annotation_table)
+        self.refresh_annotations()
+
+    def refresh_annotations(self) -> None:
+        annotations = self.database.list_annotations()
+        people = {person.id: person for person in self.database.list_people()}
+        self.annotation_table.setRowCount(len(annotations))
+        labels = {"reject": "不是此人", "associate": "关联人员",
+                  "undo_rejection": "撤销标注", "remove_association": "取消关联"}
+        for row, record in enumerate(reversed(annotations)):
+            person = people.get(record["person_id"])
+            values = (
+                datetime.fromisoformat(record["occurred_at"]).astimezone().strftime("%Y-%m-%d %H:%M:%S"),
+                record["source"], f"#{record['track_id']}", str(record["frame_index"]),
+                person.name if person else "人员已删除", person.id_card if person else "",
+                labels[record["action"]],
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setToolTip(value)
+                self.annotation_table.setItem(row, column, item)
+        self.annotation_count.setText(f"共 {len(annotations)} 条标注及操作历史 · 已保存至本地")
 
     def _build_settings_tab(self) -> None:
         tab = QWidget()
@@ -483,7 +628,10 @@ class MainWindow(QMainWindow):
 
     def _browse_video(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择视频", "", "视频 (*.mp4 *.avi *.mkv *.mov *.m4v);;所有文件 (*)"
+            self, "选择图片或视频", "",
+            "图片和视频 (*.jpg *.jpeg *.png *.bmp *.webp *.tif *.tiff *.mp4 *.avi *.mkv *.mov *.m4v);;"
+            "图片 (*.jpg *.jpeg *.png *.bmp *.webp *.tif *.tiff);;"
+            "视频 (*.mp4 *.avi *.mkv *.mov *.m4v);;所有文件 (*)"
         )
         if path:
             self.source_edit.setText(path)
@@ -493,17 +641,36 @@ class MainWindow(QMainWindow):
             return
         source = self.source_edit.text().strip()
         if not source:
-            QMessageBox.warning(self, "缺少视频源", "请选择视频、输入流地址或摄像头编号。")
+            QMessageBox.warning(self, "缺少检索来源", "请选择图片、视频，或输入流地址、摄像头编号。")
             return
+        if is_image_data_uri(source):
+            try:
+                source = str(store_image_data_uri(
+                    source, self.database.path.parent / "query_images"
+                ).resolve())
+                self.source_edit.setText(source)
+            except (ValueError, OSError, cv2.error) as exc:
+                QMessageBox.warning(self, "图片数据无效", str(exc))
+                return
+        if Path(source).is_file():
+            source = str(Path(source).resolve())
         if not self.stop_video():
             return
         self.events.setRowCount(0)
         self.video_matches.clear()
+        self.match_context.clear()
+        self.association_context.clear()
+        self.session_id = uuid.uuid4().hex
+        self.active_source = source
+        self.preview_image = QImage()
+        self.preview_result = None
+        self.preview_frame_index = 0
+        self.video_label.set_frame(self.preview_image, None)
         self.worker = VideoWorker(self.engine, source, self.config.frame_interval)
         self.worker.frame_ready.connect(self._show_frame)
         self.worker.recognized.connect(self._on_recognized)
-        self.worker.stats.connect(self.statusBar().showMessage)
-        self.worker.failed.connect(lambda message: QMessageBox.critical(self, "视频处理失败", message))
+        self.worker.stats.connect(self._worker_stats)
+        self.worker.failed.connect(self._worker_failed)
         self.worker.finished.connect(self._video_finished)
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
@@ -526,39 +693,246 @@ class MainWindow(QMainWindow):
         return True
 
     def _video_finished(self) -> None:
+        if self.sender() is not None and self.sender() is not self.worker:
+            return
         self.start_button.setEnabled(bool(self.engine))
         self.stop_button.setEnabled(False)
+        if self.worker and self.worker.had_error:
+            return
+        kind = "图片" if is_image_source(self.active_source) else "视频"
+        faces = f" · 检测到 {self.preview_result.detected_faces} 张人脸" if self.preview_result else ""
         self.statusBar().showMessage(
-            f"视频处理完成 · 匹配 {len(self.video_matches)} 人 · 已按 score 倒序排列"
+            f"{kind}处理完成{faces} · 确认匹配 {len(self.video_matches)} 人"
+            f" · 待确认 {self.video_matches.pending_count} 人"
         )
 
-    def _show_frame(self, image: QImage) -> None:
-        pixmap = QPixmap.fromImage(image)
-        self.video_label.setPixmap(
-            pixmap.scaled(self.video_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        )
+    def _worker_stats(self, message: str) -> None:
+        if self.sender() is self.worker:
+            self.statusBar().showMessage(message)
+
+    def _worker_failed(self, message: str) -> None:
+        if self.sender() is self.worker:
+            self.statusBar().showMessage("检索处理失败")
+            QMessageBox.critical(self, "检索处理失败", message)
+
+    def _show_frame(self, image: QImage, result: FrameResult | None, frame_index: int) -> None:
+        if self.sender() is not None and self.sender() is not self.worker:
+            return
+        if self._reviewing:
+            return
+        self.preview_image = image
+        self.preview_result = result
+        self.preview_frame_index = frame_index
+        self._refresh_preview()
+
+    def _refresh_preview(self) -> None:
+        result = self.preview_result
+        if result:
+            tracks = []
+            for track in result.tracks:
+                association = self.video_matches.association(track.id)
+                if association:
+                    track = replace(track, name=association.name, person_id=association.person_id,
+                                    id_card=association.id_card, annotation="人工关联")
+                elif (track.person_id or track.candidate_person_id) and self.video_matches.is_rejected(
+                    track.id, track.person_id or track.candidate_person_id
+                ):
+                    track = replace(track, name=f"已排除：{track.candidate_name or track.name}", person_id=None,
+                                    id_card="", annotation="不是此人")
+                tracks.append(track)
+            result = replace(result, tracks=tuple(tracks))
+        self.video_label.set_frame(self.preview_image, result)
 
     def _on_recognized(self, event: dict) -> None:
+        if self.sender() is not None and self.sender() is not self.worker:
+            return
         changed = self.video_matches.update(event)
+        key = (event["track_id"], event["person_id"])
+        previous = self.match_context.get(key)
+        if not self.video_matches.is_rejected(*key) and (
+            previous is None or event["score"] > previous.get("score", -1)
+            or (event.get("confirmed", True) and not previous.get("confirmed", True))
+        ):
+            self.match_context[key] = event.copy()
         if changed:
-            ranked = self.video_matches.ranked()
-            self.events.setRowCount(len(ranked))
-            for row, match in enumerate(ranked):
-                values = (
-                    match.time,
-                    f"#{match.track_id}",
-                    match.name,
-                    match.id_card,
-                    f"{match.score:.3f}",
-                    f"{match.quality:.3f}",
-                )
-                for column, value in enumerate(values):
-                    self.events.setItem(row, column, QTableWidgetItem(value))
-        if self.database and event.get("new_track_match", True):
+            self._render_matches()
+        if self.database and event.get("confirmed", True) and event.get("new_track_match", True):
             self.database.log_event(
-                event["person_id"], self.source_edit.text().strip(), event["track_id"],
+                event["person_id"], self.active_source, event["track_id"],
                 event["score"], event["quality"]
             )
+
+    def _render_matches(self) -> None:
+        matches = self.video_matches.displayed()
+        self.events.setRowCount(len(matches))
+        for row, match in enumerate(matches):
+            values = (match.time, f"#{match.track_id}", match.name, match.id_card,
+                      "—" if match.status == "人工关联" else f"{match.score:.3f}",
+                      f"{match.quality:.3f}", match.status)
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setToolTip(value)
+                if match.reason:
+                    item.setToolTip(f"{value}\n{match.reason}")
+                if match.status == "不是此人":
+                    item.setForeground(QColor("#c0392b"))
+                elif match.status == "待确认":
+                    item.setForeground(QColor("#9a6700"))
+                self.events.setItem(row, column, item)
+            action = "撤销标注" if match.status == "不是此人" else (
+                "取消关联" if match.status == "人工关联" else "不是此人"
+            )
+            button = QPushButton(action)
+            button.clicked.connect(lambda checked=False, selected=match: self._review_match(selected))
+            self.events.setCellWidget(row, 7, button)
+
+    def _save_annotation(
+        self, track_id: int, person_id: str, action: str, context: dict | None = None
+    ) -> bool:
+        context = context or {}
+        try:
+            folder = self.database.path.parent / "annotations" / self.session_id
+            folder.mkdir(parents=True, exist_ok=True)
+            token = uuid.uuid4().hex
+            snapshot_path = None
+            face_path = None
+            if context.get("face_jpeg"):
+                face_file = folder / f"{token}-face.jpg"
+                face_file.write_bytes(context["face_jpeg"])
+                face_path = str(face_file)
+            # Preserve the exact visible frame for right-click annotations.
+            if context.get("frame_index") == self.preview_frame_index and not self.preview_image.isNull():
+                snapshot = folder / f"{token}-frame.jpg"
+                if not self.preview_image.save(str(snapshot), "JPG", 95):
+                    raise OSError("无法保存标注画面")
+                snapshot_path = str(snapshot)
+            self.database.log_annotation(
+                self.session_id, self.active_source, track_id, action, person_id,
+                context.get("frame_index", self.preview_frame_index), context.get("bbox"),
+                snapshot_path, face_path,
+                score=context.get("score"), quality=context.get("quality"),
+                model_id=self.engine.model_id if self.engine else None,
+            )
+            self.refresh_annotations()
+            return True
+        except Exception as exc:
+            QMessageBox.critical(self, "标注保存失败", str(exc))
+            return False
+
+    def _review_match(self, match: VideoMatch) -> None:
+        action = {"不是此人": "undo_rejection", "人工关联": "remove_association"}.get(
+            match.status, "reject"
+        )
+        context = self.association_context.get(match.track_id) if match.status == "人工关联" else (
+            self.match_context.get((match.track_id, match.person_id))
+        )
+        if not self._save_annotation(match.track_id, match.person_id, action, context):
+            return
+        if action == "reject":
+            self.video_matches.reject(match.track_id, match.person_id)
+        elif action == "undo_rejection":
+            self.video_matches.undo_rejection(match.track_id, match.person_id)
+        else:
+            self.video_matches.remove_association(match.track_id)
+            self.association_context.pop(match.track_id, None)
+        self._render_matches()
+        self._refresh_preview()
+        self.statusBar().showMessage(
+            f"标注已保存 · 确认匹配 {len(self.video_matches)} 人 · 待确认 {self.video_matches.pending_count} 人"
+        )
+
+    def _track_menu(self, track: TrackView, position: object) -> None:
+        self._reviewing = True
+        try:
+            menu = QMenu(self)
+            associate = menu.addAction("关联已录入人员…")
+            association = self.video_matches.association(track.id)
+            remove = menu.addAction("取消关联") if association else None
+            chosen = menu.exec(position)
+            if remove is not None and chosen == remove:
+                self._review_match(association)
+                return
+            if chosen != associate:
+                return
+            people = self.database.list_people()
+            if not people:
+                QMessageBox.information(self, "人员库为空", "请先在人员库录入人员。")
+                return
+            dialog = PersonAssociationDialog(people, self)
+            if dialog.exec() != QDialog.Accepted:
+                return
+            person = dialog.selected_person()
+            if person is None:
+                return
+            context = {"frame_index": self.preview_frame_index, "bbox": track.bbox,
+                       "score": track.score, "quality": track.quality}
+            if not self._save_annotation(track.id, person.id, "associate", context):
+                return
+            self.video_matches.associate(VideoMatch(
+                datetime.now().strftime("%H:%M:%S"), track.id, person.id,
+                person.name, person.id_card, 0.0, track.quality, "人工关联",
+            ))
+            self.association_context[track.id] = context
+            self._render_matches()
+            self._refresh_preview()
+            self.statusBar().showMessage(f"轨迹 #{track.id} 已关联 {person.name}")
+        finally:
+            self._reviewing = False
+
+    def export_annotations(self) -> None:
+        if self.export_worker and self.export_worker.isRunning():
+            return
+        count = len(self.database.list_annotations())
+        if not count:
+            QMessageBox.information(self, "标注库为空", "请先标注匹配结果或关联人员。")
+            return
+        dialog = AnnotationExportDialog(count, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        options = dialog.options()
+        if options.include_media and not options.full_video and not (
+            options.seconds_before or options.seconds_after
+        ):
+            QMessageBox.warning(self, "片段时长无效", "标注前后的时长至少有一项大于 0 秒。")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出标注库", f"标注库-{datetime.now():%Y%m%d-%H%M%S}.zip", "ZIP 压缩包 (*.zip)"
+        )
+        if not path:
+            return
+        self.export_progress = QProgressDialog("准备导出标注库…", None, 0, 0, self)
+        self.export_progress.setWindowTitle("导出标注库")
+        self.export_progress.setWindowModality(Qt.WindowModal)
+        self.export_progress.show()
+        self.export_button.setEnabled(False)
+        self.library_export_button.setEnabled(False)
+        self.export_worker = AnnotationExportWorker(self.database, Path(path), options)
+        self.export_worker.progress.connect(self.export_progress.setLabelText)
+        self.export_worker.succeeded.connect(self._export_succeeded)
+        self.export_worker.failed.connect(self._export_failed)
+        self.export_worker.start()
+
+    def _export_succeeded(self, report: ExportReport) -> None:
+        self._close_export_progress()
+        message = f"已导出 {report.annotation_count} 条标注。\n{self.export_worker.path}"
+        if report.issues:
+            QMessageBox.warning(
+                self, "导出完成，部分媒体缺失",
+                message + "\n\n" + "\n".join(report.issues[:8])
+                + "\n完整缺失清单见压缩包内 manifest.json。",
+            )
+        else:
+            QMessageBox.information(self, "导出完成", message)
+
+    def _export_failed(self, message: str) -> None:
+        self._close_export_progress()
+        QMessageBox.critical(self, "导出失败", message)
+
+    def _close_export_progress(self) -> None:
+        if self.export_progress:
+            self.export_progress.close()
+        self.export_button.setEnabled(True)
+        self.library_export_button.setEnabled(True)
 
     def _selected_person(self) -> PersonRecord | None:
         row = self.people_table.currentRow()
@@ -570,6 +944,14 @@ class MainWindow(QMainWindow):
         if not person:
             QMessageBox.warning(self, "人员不存在", "记录已变化，请刷新列表。")
         return person
+
+    def view_person_photos(self) -> None:
+        person = self._selected_person()
+        if person is None:
+            return
+        samples = [sample for sample in self.database.list_stored_samples()
+                   if sample.person_id == person.id]
+        PersonPhotosDialog(person, samples, self).exec()
 
     def _require_idle(self) -> bool:
         if self.worker and self.worker.isRunning():
@@ -738,6 +1120,10 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "设置无效", str(exc))
 
     def closeEvent(self, event: object) -> None:
+        if self.export_worker and self.export_worker.isRunning():
+            QMessageBox.information(self, "正在导出", "请等待标注库导出完成后再关闭。")
+            event.ignore()
+            return
         if self.stop_video():
             event.accept()
         else:

@@ -93,6 +93,30 @@ def test_corrupt_embedding_row_is_not_loaded(tmp_path):
     assert database.list_gallery("model-a") == []
 
 
+def test_below_threshold_match_retains_a_candidate_for_manual_review(tmp_path):
+    database = FaceDatabase(tmp_path / "faces.db")
+    person = database.add_person("Expected person", "A", [
+        sample("a", unit(0.41348, np.sqrt(1 - 0.41348**2), 0))
+    ])
+    database.add_person("Other", "B", [sample("b", unit(0.08836, 0, np.sqrt(1 - 0.08836**2)))])
+    matcher = GalleryMatcher(database, "model-a", threshold=0.45, min_margin=0.06)
+    result = matcher.match(unit(1, 0, 0))
+    assert not result.accepted and result.person_id is None
+    assert result.candidate_person_id == person
+    assert result.candidate_name == "Expected person"
+    assert result.score == pytest.approx(0.41348)
+    assert "0.450" in result.rejection_reason
+
+
+def test_ambiguous_match_retains_candidate_and_explains_the_margin(tmp_path):
+    database = FaceDatabase(tmp_path / "faces.db")
+    database.add_person("A", "A", [sample("a", unit(1, 0))])
+    database.add_person("B", "B", [sample("b", unit(0.99, 0.01))])
+    result = GalleryMatcher(database, "model-a").match(unit(1, 0))
+    assert result.person_id is None and result.candidate_person_id
+    assert "候选差值" in result.rejection_reason
+
+
 def test_internal_event_log_preserves_video_source_verbatim(tmp_path):
     database = FaceDatabase(tmp_path / "faces.db")
     person_id = database.add_person("Alice", "110101199001010000", [sample("a", unit(1, 0))])

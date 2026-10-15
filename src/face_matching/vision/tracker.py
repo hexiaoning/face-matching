@@ -75,6 +75,7 @@ class Track:
     candidate_id: str | None = None
     candidate_count: int = 0
     unknown_count: int = 0
+    last_match: MatchResult | None = None
 
     def add(self, observation: Observation, frame_index: int) -> None:
         new_bbox = np.asarray(observation.bbox, dtype=np.float32)
@@ -115,6 +116,7 @@ class Track:
         if self.matched_embedding_version == self.embedding_version:
             return
         self.matched_embedding_version = self.embedding_version
+        self.last_match = match
         self.score = match.score
         self.match_history.append(match.person_id or "")
         self.match_history = self.match_history[-5:]
@@ -145,6 +147,7 @@ class Track:
                 self.id_card = ""
 
     def invalidate_identity(self) -> None:
+        self.last_match = None
         self.name = "采集中"
         self.person_id = None
         self.id_card = ""
