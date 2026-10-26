@@ -28,9 +28,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--verify-models", action="store_true", help="校验模型 SHA-256 并退出")
     parser.add_argument("--diagnose", action="store_true", help="校验模型并执行真实 GPU 推理")
     parser.add_argument("--check-gui", action="store_true", help="检查离线 Qt GUI 运行库并退出")
+    parser.add_argument("--image-tools", action="store_true", help="单独打开离线图像增强，无需 GPU 或模型")
     parser.add_argument("--report", type=Path, help="把诊断 JSON 写入指定文件")
     parser.add_argument("--profile", choices=sorted(PROFILES), help="覆盖配置中的模型档")
     args = parser.parse_args(argv)
+    if args.image_tools:
+        from PySide6.QtWidgets import QApplication
+        from .gui.image_tools import ImageToolsDialog
+
+        application = QApplication.instance() or QApplication(sys.argv[:1])
+        application.setApplicationName("离线图像增强")
+        application.setStyle("Fusion")
+        window = ImageToolsDialog()
+        window.show()
+        return application.exec()
     config = AppConfig.load()
     if args.profile:
         config.model_profile = args.profile

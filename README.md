@@ -40,11 +40,21 @@ CUDA 启动时执行真实推理并检查节点执行记录，要求存在 CUDA 
 
 构建脚本会先跑测试，下载并校验固定 SHA-256 的模型，然后把 Python、PySide6、OpenCV、CUDA/OpenVINO GPU 运行库和两套模型一并打入 `dist\FaceMatching-v2.6.3-windows-x64.zip`。目标机不需要 Python、CUDA Toolkit、OpenVINO Toolkit 或互联网；只需预装对应显卡驱动。
 
-目标机可直接双击 `FaceMatching-v2.6.3-Setup.exe` 安装；也可解压便携 ZIP 后双击 `安装并启动 Face Matching.cmd`。启动窗口会先显示 `Face Matching Offline Bundle v2.6.3` 和构建标记，再离线校验 Qt GUI 运行库、GPU 和模型。两种方式都不会调用 `winget` 或 `pip`。
+目标机解压完整离线 ZIP 后双击 `安装并启动 Face Matching.cmd`。启动窗口会先显示 `Face Matching Offline Bundle v2.6.3` 和构建标记，再离线校验 Qt GUI 运行库、GPU 和模型。目标机不会调用 `winget` 或 `pip`。发布仅提供完整离线 ZIP，不生成增量包或 EXE 安装程序。
 
 > NVIDIA 显卡驱动是与机器/系统绑定的设备组件，不随应用包分发；其余应用运行依赖和模型均包含在离线包中。包含 LVFace-B 权重前必须接受其非商业研究限制；商业部署可只构建 `auraface`。
 
 ## 开发机联网安装与运行
+
+### 独立离线图像增强
+
+在主窗口打开“图像增强”页；也可以双击完整离线包中的 `打开图像增强.cmd`，或使用 `FaceMatching.exe --image-tools` 独立启动。开发环境使用 `python -m face_matching --image-tools`。独立入口不初始化人脸模型、人员库或 GPU，不需要网络，也不需要新增模型。
+
+打开图片后，选择“保守增强”“屏幕翻拍”或“暗部提亮”预设，调整纹理抑制、降噪、提亮、局部对比度和锐化，点击“应用参数”。左右显示完整分辨率的原图与处理结果；在左侧拖动框选可放大同一区域，也可按 100% 像素查看。每次处理均从原图开始，不累计叠加。屏幕纹理抑制也会柔化真实细节，不能保证去除所有摩尔纹；过曝、遮挡或缺失的细节无法通过这些处理恢复。
+
+可另存无损 PNG，或导出 ZIP，包含打开时保留的原始文件、处理图、可选局部对照及 `manifest.json`（处理参数、算法版本、尺寸、选区坐标、时间和各文件 SHA-256）。导出不会覆盖任何已有文件。参数修改但尚未应用时禁止导出，以免记录与图像不一致。处理和导出在后台执行。该工具不执行身份识别，也不会把处理图自动送入识别流程。
+
+### 开发环境
 
 1. 安装/更新 NVIDIA 或 Intel 显卡驱动。
 2. 双击 `install.cmd`。脚本会创建隔离的 `.venv`、安装 GUI 与 CUDA/cuDNN 运行库，然后执行 GPU 硬校验。如果没有合适的 Python，Windows 11 上会先通过 `winget` 安装用户级 Python 3.12。该路径用于开发/评估，需要联网，不是目标机部署方式。

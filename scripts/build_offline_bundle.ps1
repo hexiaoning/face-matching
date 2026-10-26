@@ -130,6 +130,8 @@ finally {
 }
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "packaging\安装并启动 Face Matching.cmd") `
     -Destination (Join-Path $ReleaseDirectory "安装并启动 Face Matching.cmd") -Force
+Copy-Item -LiteralPath (Join-Path $ProjectRoot "packaging\打开图像增强.cmd") `
+    -Destination (Join-Path $ReleaseDirectory "打开图像增强.cmd") -Force
 
 Write-Host "[5/5] Creating a Zip64 archive and SHA-256 manifests..." -ForegroundColor Cyan
 Invoke-CheckedPython -Arguments @((Join-Path $ProjectRoot "scripts\create_release_archive.py"), $ReleaseDirectory, $Archive)
