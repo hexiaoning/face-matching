@@ -1,5 +1,17 @@
 # Face Matching
 
+## v2.7.0 本次完整离线交付
+
+本次交付为独立的“离线图像与人车分析”程序，仅包含人车目标检测与图像增强两个页面。版本号为 2.7.0，ZIP 包含运行库与 RT-DETRv2-R50 模型，解压后运行 `启动离线分析.cmd`。无需目标机安装 Python 或联网下载；人车检测需要预装兼容的 NVIDIA / Intel 显卡驱动，图像增强无需 GPU。
+
+在准备好 `.[build]` 依赖的 Python 3.12 构建环境中执行：
+
+```powershell
+.\scripts\build_video_analysis_bundle.ps1 -Python .\.build-venv\Scripts\python.exe -RunGpuSmoke
+```
+
+输出为 `dist\VideoAnalysis-v2.7.0-windows-x64.zip`，附 ZIP SHA-256 和包内逐文件校验清单。构建会运行测试、校验模型、审计运行库及应用模块，并对打包后的 EXE 执行运行库和可选真实 GPU 自检。仅发布完整 ZIP，不生成增量包或 EXE 安装程序。以下保留原有工程说明及历史部署说明，不是本次独立程序的构建入口。
+
 Windows 11 桌面端图片 / 视频人脸检索。人员库保存“姓名 + 身份证号 + 1～多张照片”，界面支持本地图片、视频、摄像头、RTSP/RTMP 视频流，识别结果会在人脸框和匹配列表中显示。每个命中人员保留最高 score，并在匹配列表中按 score 倒序输出；本地视频文件会按机器性能尽快处理，界面预览限制为 15 FPS，避免高速处理时积压图像。支持“不是此人”纠错、右键关联已录入人员，以及导出标注库。
 
 > 这是 **GPU-only** 应用。NVIDIA 使用 ONNX Runtime CUDA，Intel 核显/Arc 使用 OpenVINO GPU FP32；两种后端都禁止神经网络回退 CPU。`auto` 优先 CUDA，再选 OpenVINO。视频解码、跟踪管理、SQLite 和 GUI 等非神经网络工作仍由 CPU 执行。
