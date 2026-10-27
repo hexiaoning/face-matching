@@ -7,8 +7,23 @@ import numpy as np
 import pytest
 
 from face_matching.image_enhancement import (
-    PRESETS, EnhancementSettings, encode_png, enhance_image, export_enhancement, save_new_png,
+    PRESETS, EnhancementSettings, encode_png, enhance_image, enhance_region, export_enhancement, save_new_png,
 )
+
+
+def test_local_face_plate_enhancement_preserves_outside_region_pixel_for_pixel(tmp_path):
+    original = sample_image()
+    region = (20, 10, 80, 60)
+    result = enhance_region(original, PRESETS['车牌清晰化（保守）'], region)
+    mask = np.ones(original.shape[:2], bool)
+    mask[10:60, 20:80] = False
+    np.testing.assert_array_equal(result[mask], original[mask])
+    assert np.any(result[~mask] != original[~mask])
+    output = tmp_path / '记录.zip'
+    export_enhancement(output, '原图.png', encode_png(original), original, result,
+                       PRESETS['车牌清晰化（保守）'], region, region)
+    with ZipFile(output) as archive:
+        assert json.loads(archive.read('manifest.json'))['processing_region_xyxy'] == list(region)
 
 
 def sample_image():

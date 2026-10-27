@@ -2,9 +2,13 @@
 param(
     [ValidateSet("lvface-b", "auraface")]
     [string[]]$Profiles = @("lvface-b", "auraface"),
+    [string]$Python = "",
+    [string]$ModelDirectory = "",
     [switch]$AcceptResearchWeights,
     [switch]$Clean,
-    [switch]$SkipTests
+    [switch]$SkipTests,
+    [switch]$SkipDependencyInstall,
+    [switch]$RunGpuSmoke
 )
 
 $ErrorActionPreference = "Stop"
@@ -12,9 +16,13 @@ Set-StrictMode -Version Latest
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $BuildEnvironment = Join-Path $ProjectRoot ".build-venv"
 $BuildPython = Join-Path $BuildEnvironment "Scripts\python.exe"
+if ($Python) { $BuildPython = (Resolve-Path -LiteralPath $Python).Path }
 $ModelRoot = Join-Path $ProjectRoot ".build-assets\models"
+if ($ModelDirectory) { $ModelRoot = [IO.Path]::GetFullPath($ModelDirectory) }
+$env:PYTHONPATH = Join-Path $ProjectRoot "src"
+$Version = [regex]::Match((Get-Content (Join-Path $ProjectRoot "src\face_matching\__init__.py") -Raw), '__version__ = "([^"]+)"').Groups[1].Value
 $ReleaseRoot = Join-Path $ProjectRoot "dist"
-$ReleaseName = "FaceMatching-v2.6.3-windows-x64"
+$ReleaseName = "FaceMatching-v$Version-windows-x64"
 $ReleaseDirectory = Join-Path $ReleaseRoot $ReleaseName
 $Archive = Join-Path $ReleaseRoot ($ReleaseName + ".zip")
 
@@ -43,7 +51,7 @@ if ($Profiles -contains "lvface-b" -and -not $AcceptResearchWeights) {
 }
 
 if ($Clean) {
-    foreach ($Target in @($BuildEnvironment, (Join-Path $ProjectRoot ".build-assets"), (Join-Path $ProjectRoot "build"), $ReleaseRoot)) {
+    foreach ($Target in @((Join-Path $ProjectRoot "build"), $ReleaseRoot)) {
         Assert-SafeBuildTarget -Path $Target
         if (Test-Path -LiteralPath $Target) {
             Remove-Item -LiteralPath $Target -Recurse -Force
@@ -78,9 +86,11 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "[1/5] Installing bounded CUDA/OpenVINO GPU runtime dependencies..." -ForegroundColor Cyan
-Invoke-CheckedPython -Arguments @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
-Invoke-CheckedPython -Arguments @("-m", "pip", "uninstall", "-y", "onnxruntime", "onnxruntime-directml")
-Invoke-CheckedPython -Arguments @("-m", "pip", "install", "--upgrade", ($ProjectRoot + "[build]"))
+if (-not $SkipDependencyInstall) {
+    Invoke-CheckedPython -Arguments @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
+    Invoke-CheckedPython -Arguments @("-m", "pip", "uninstall", "-y", "onnxruntime", "onnxruntime-directml")
+    Invoke-CheckedPython -Arguments @("-m", "pip", "install", "--upgrade", ($ProjectRoot + "[build]"))
+}
 
 Write-Host "[2/5] Downloading and SHA-256 checking models for the offline package..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Path $ModelRoot -Force | Out-Null
@@ -101,12 +111,14 @@ if (-not $SkipTests) {
 Write-Host "[4/5] Building a self-contained Windows x64 portable directory..." -ForegroundColor Cyan
 $env:FACE_MATCHING_PROJECT_ROOT = $ProjectRoot
 $env:FACE_MATCHING_BUNDLE_MODEL_DIR = $ModelRoot
+$env:FACE_MATCHING_BUNDLE_PROFILES = $Profiles -join ','
 try {
     Invoke-CheckedPython -Arguments @("-m", "PyInstaller", "--noconfirm", "--clean", (Join-Path $ProjectRoot "packaging\FaceMatching.spec"))
 }
 finally {
     Remove-Item Env:FACE_MATCHING_PROJECT_ROOT -ErrorAction SilentlyContinue
     Remove-Item Env:FACE_MATCHING_BUNDLE_MODEL_DIR -ErrorAction SilentlyContinue
+    Remove-Item Env:FACE_MATCHING_BUNDLE_PROFILES -ErrorAction SilentlyContinue
 }
 
 if (-not (Test-Path -LiteralPath (Join-Path $ReleaseDirectory "FaceMatching.exe") -PathType Leaf)) {
@@ -116,26 +128,39 @@ if (Test-Path -LiteralPath (Join-Path $ReleaseDirectory "_internal\icuuc.dll") -
     throw "An external icuuc.dll shadowed the Windows system ICU shim in the offline bundle."
 }
 
-$GuiReport = Join-Path $ProjectRoot ".build-assets\gui-runtime-smoke-$PID.json"
+Invoke-CheckedPython -Arguments (@((Join-Path $ProjectRoot "scripts\audit_offline_bundle.py"), $ReleaseDirectory, "--profiles") + $Profiles)
+Copy-Item -LiteralPath (Join-Path $ProjectRoot "packaging\start_face_matching.cmd") -Destination (Join-Path $ReleaseDirectory "启动综合分析.cmd") -Force
+Copy-Item -LiteralPath (Join-Path $ProjectRoot "packaging\FaceMatching-README.txt") -Destination (Join-Path $ReleaseDirectory "使用说明.txt") -Force
+$GuiReport = Join-Path $ReleaseDirectory "runtime-check.json"
+$PreviousHome = $env:FACE_MATCHING_HOME
+$PreviousQt = $env:QT_QPA_PLATFORM
+$env:FACE_MATCHING_HOME = Join-Path $ProjectRoot ".build-assets\unified-clean-home"
+$env:QT_QPA_PLATFORM = "offscreen"
 try {
+    $Arguments = @("--check-runtime", "--report", ('"{0}"' -f $GuiReport))
+    if ($RunGpuSmoke) { $Arguments += "--diagnose" }
     $GuiCheck = Start-Process -FilePath (Join-Path $ReleaseDirectory "FaceMatching.exe") `
-        -ArgumentList @("--check-gui", "--report", $GuiReport) -Wait -PassThru -WindowStyle Hidden
+        -ArgumentList $Arguments -Wait -PassThru -WindowStyle Hidden
     if ($GuiCheck.ExitCode -ne 0) {
         if (Test-Path -LiteralPath $GuiReport) {
             Get-Content -LiteralPath $GuiReport
         }
         throw "Packaged Qt GUI runtime smoke test failed (exit $($GuiCheck.ExitCode))."
     }
+    $Payload = Get-Content -LiteralPath $GuiReport -Raw -Encoding UTF8 | ConvertFrom-Json
+    $ExpectedTabs = @("人脸检索", "人车检测", "图像增强", "以图搜索", "人员库", "标注库", "设置")
+    if (-not $Payload.ok -or $Payload.version -ne $Version -or ($Payload.tabs -join '|') -ne ($ExpectedTabs -join '|')) {
+        throw "Packaged application is incomplete or has the wrong version."
+    }
 }
 finally {
-    Remove-Item -LiteralPath $GuiReport -Force -ErrorAction SilentlyContinue
+    $env:FACE_MATCHING_HOME = $PreviousHome
+    $env:QT_QPA_PLATFORM = $PreviousQt
 }
-Copy-Item -LiteralPath (Join-Path $ProjectRoot "packaging\安装并启动 Face Matching.cmd") `
-    -Destination (Join-Path $ReleaseDirectory "安装并启动 Face Matching.cmd") -Force
-Copy-Item -LiteralPath (Join-Path $ProjectRoot "packaging\打开图像增强.cmd") `
-    -Destination (Join-Path $ReleaseDirectory "打开图像增强.cmd") -Force
-Copy-Item -LiteralPath (Join-Path $ProjectRoot "packaging\打开人车检测.cmd") `
-    -Destination (Join-Path $ReleaseDirectory "打开人车检测.cmd") -Force
+$BuildCommit = (git -C $ProjectRoot rev-parse HEAD).Trim()
+@{ application="FaceMatching"; version=$Version; source_commit=$BuildCommit; profiles=$Profiles;
+    created_at=[DateTime]::UtcNow.ToString("o"); artifact="complete-offline-zip" } |
+    ConvertTo-Json | Set-Content -LiteralPath (Join-Path $ReleaseDirectory "release-info.json") -Encoding UTF8
 
 Write-Host "[5/5] Creating a Zip64 archive and SHA-256 manifests..." -ForegroundColor Cyan
 Invoke-CheckedPython -Arguments @((Join-Path $ProjectRoot "scripts\create_release_archive.py"), $ReleaseDirectory, $Archive)

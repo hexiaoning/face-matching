@@ -2,9 +2,14 @@ from pathlib import Path
 from importlib.util import find_spec
 import os
 import sys
+import runpy
 
 from PyInstaller.utils.hooks import collect_all, copy_metadata
 from PyInstaller.building.datastruct import TOC
+from PyInstaller.utils.win32.versioninfo import (
+    FixedFileInfo, StringFileInfo, StringStruct, StringTable, VarFileInfo, VarStruct, VSVersionInfo,
+)
+from face_matching.models import required_paths, required_person_vehicle_model
 
 
 project_root = Path(os.environ.get("FACE_MATCHING_PROJECT_ROOT", Path.cwd())).resolve()
@@ -14,9 +19,15 @@ if not model_root_value:
 model_root = Path(model_root_value).resolve()
 if not model_root.is_dir():
     raise SystemExit(f"Offline model directory does not exist: {model_root}")
+version = runpy.run_path(str(project_root / "src/face_matching/__init__.py"))["__version__"]
+profiles = os.environ.get("FACE_MATCHING_BUNDLE_PROFILES", "lvface-b,auraface").split(',')
+models = {required_person_vehicle_model(model_root)}
+for profile in profiles:
+    models.update(required_paths(profile, model_root, verify_hash=True))
 
 datas = [
-    (str(model_root), "models"),
+    *[(str(model), "models") for model in sorted(models)],
+    (str(project_root / "src/face_matching/resources"), "face_matching/resources"),
     (str(project_root / "README.md"), "."),
     (str(project_root / "THIRD_PARTY_NOTICES.md"), "."),
     (str(project_root / "packaging" / "licenses" / "RT-DETR-LICENSE.txt"), "licenses"),
@@ -108,6 +119,16 @@ def is_external_icu(entry):
 
 a.binaries = TOC(entry for entry in a.binaries if not is_external_icu(entry))
 pyz = PYZ(a.pure)
+parts = tuple(int(part) for part in version.split('.')) + (0,)
+version_info = VSVersionInfo(
+    ffi=FixedFileInfo(filevers=parts, prodvers=parts, mask=0x3F, flags=0,
+                      OS=0x40004, fileType=1, subtype=0, date=(0, 0)),
+    kids=[StringFileInfo([StringTable("040904B0", [
+        StringStruct("FileDescription", "Offline Unified Analysis"),
+        StringStruct("FileVersion", version), StringStruct("ProductName", "FaceMatching"),
+        StringStruct("ProductVersion", version), StringStruct("OriginalFilename", "FaceMatching.exe"),
+    ])]), VarFileInfo([VarStruct("Translation", [1033, 1200])])],
+)
 
 exe = EXE(
     pyz,
@@ -115,6 +136,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="FaceMatching",
+    version=version_info,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -132,5 +154,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="FaceMatching-v2.6.3-windows-x64",
+    name=f"FaceMatching-v{version}-windows-x64",
 )

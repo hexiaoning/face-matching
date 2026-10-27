@@ -85,13 +85,39 @@ def test_escape_cannot_destroy_dialog_while_processing(app, monkeypatch):
     assert dialog.close()
 
 
-def test_standalone_entry_does_not_load_config_or_check_gpu(app, monkeypatch):
+def test_local_processing_requires_region_and_new_region_blocks_stale_export(app, tmp_path):
+    source = tmp_path / 'original.png'
+    pixels = np.random.default_rng(2).integers(0, 255, (80, 100, 3), np.uint8)
+    source.write_bytes(encode_png(pixels))
+    tool = ImageToolsWidget()
+    try:
+        assert tool.load_image(source)
+        tool.region_only.setChecked(True)
+        assert not tool.apply_button.isEnabled()
+        tool._select_region((10, 10, 50, 50))
+        tool.preset.setCurrentText('人脸清晰化（保守）')
+        tool._apply()
+        wait_for_worker(app, tool)
+        assert tool.png_button.isEnabled()
+        assert tool.applied_region == (10, 10, 50, 50)
+        np.testing.assert_array_equal(tool.processed[:10], pixels[:10])
+        tool._select_region((20, 20, 60, 60))
+        assert not tool.png_button.isEnabled()
+        assert not tool.zip_button.isEnabled()
+        tool._select_region(None)
+        assert not tool.apply_button.isEnabled()
+    finally:
+        tool.close()
+        tool.deleteLater()
+
+
+def test_image_tools_entry_does_not_initialize_gpu(app, tmp_path, monkeypatch):
     from face_matching import __main__
 
     def unexpected(*args, **kwargs):
         raise AssertionError("独立图像工具不应初始化配置或 GPU")
 
-    monkeypatch.setattr(__main__.AppConfig, "load", unexpected)
+    monkeypatch.setenv("FACE_MATCHING_HOME", str(tmp_path))
     monkeypatch.setattr(__main__, "assert_gpu_available", unexpected)
     monkeypatch.setattr(QApplication, "exec", lambda self: 0)
     assert __main__.main(["--image-tools"]) == 0

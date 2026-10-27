@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .database import FaceDatabase, GallerySample
+from .identity_filters import PersonFilter
 from .vision.recognizer import l2_normalize
 
 
@@ -45,6 +46,7 @@ class GalleryMatcher:
         self.model_id = model_id
         self.threshold = float(threshold)
         self.min_margin = float(min_margin)
+        self.person_filter = PersonFilter()
         self.identities: list[_Identity] = []
         self.sample_matrix = np.empty((0, 0), dtype=np.float32)
         self.sample_owners = np.empty(0, dtype=np.intp)
@@ -60,6 +62,8 @@ class GalleryMatcher:
     def refresh(self) -> None:
         grouped: dict[str, list[GallerySample]] = {}
         for sample in self.database.list_gallery(self.model_id):
+            if not self.person_filter.matches(sample.id_card, sample.library_ids):
+                continue
             grouped.setdefault(sample.person_id, []).append(sample)
         identities: list[_Identity] = []
         sample_rows: list[np.ndarray] = []

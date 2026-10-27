@@ -108,13 +108,13 @@ def test_escape_requests_stop_and_cannot_destroy_active_worker(app, monkeypatch)
     assert dialog.close()
 
 
-def test_standalone_entry_does_not_initialize_face_models_or_identity_engine(app, monkeypatch):
+def test_detection_entry_does_not_initialize_face_models_or_identity_engine(app, tmp_path, monkeypatch):
     from face_matching import __main__
 
     def unexpected(*args, **kwargs):
         raise AssertionError("不应初始化人脸推理")
 
-    monkeypatch.setattr(__main__.AppConfig, "load", lambda: SimpleNamespace(gpu_backend="auto", gpu_device_id=0))
+    monkeypatch.setenv("FACE_MATCHING_HOME", str(tmp_path))
     monkeypatch.setattr(__main__, "required_paths", unexpected)
     monkeypatch.setattr(__main__, "assert_gpu_available", unexpected)
     monkeypatch.setattr(QApplication, "exec", lambda self: 0)

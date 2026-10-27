@@ -16,3 +16,12 @@
 | AuraFace-v1 | 可替代人脸特征 | Apache-2.0 模型卡；部署方仍需完成数据与用途合规审核 |
 
 构建脚本不会绕过 LVFace 权重提示：包含 `lvface-b` 时必须显式传入 `-AcceptResearchWeights`。生物特征和身份证号属于敏感个人信息，模型许可证不等于取得数据处理或安防使用授权。
+
+
+## Offline administrative region reference data
+
+The 2023 province/city/county reference JSON and its WTFPL license are bundled under
+`face_matching/resources`. Source: https://github.com/modood/Administrative-divisions-of-China
+at commit c49d495b40ac73eb1a66f6eeae5f8fd10696f035. Dataset date: 2023-06-30.
+The pinned source URL and SHA-256 are recorded in regions-source.json. Names are
+historical references; unmatched historic address codes can be entered directly.

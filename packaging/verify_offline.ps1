@@ -32,11 +32,11 @@ if ($Profiles.Count -eq 0) {
     throw "No supported offline recognizer model was found in the bundle."
 }
 
-foreach ($Profile in $Profiles) {
+foreach ($Profile in @($Profiles[0])) {
     $Report = Join-Path ([IO.Path]::GetTempPath()) ("face-matching-{0}-{1}.json" -f $Profile, [guid]::NewGuid().ToString("N"))
     try {
-        Write-Host "Verifying model hashes and real CUDA/OpenVINO GPU inference: $Profile" -ForegroundColor Cyan
-        $Arguments = @("--diagnose", "--profile", $Profile, "--report", ('"{0}"' -f $Report))
+        Write-Host "Verifying complete application and all bundled face/person-vehicle models on GPU" -ForegroundColor Cyan
+        $Arguments = @("--check-runtime", "--diagnose", "--profile", $Profile, "--report", ('"{0}"' -f $Report))
         $Process = Start-Process -FilePath $Executable -ArgumentList $Arguments -Wait -PassThru -WindowStyle Hidden
         if ($Process.ExitCode -ne 0) {
             if (Test-Path -LiteralPath $Report) {

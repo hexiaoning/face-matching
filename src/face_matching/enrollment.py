@@ -63,18 +63,19 @@ class EnrollmentService:
             except OSError:
                 pass
 
-    def add_person(self, name: str, id_card: str, photo_paths: list[str | Path]) -> str:
+    def add_person(self, name: str, id_card: str, photo_paths: list[str | Path],
+                   library_ids: list[str] | None = None) -> str:
         person_id = uuid.uuid4().hex
         samples, created = self._prepare(person_id, photo_paths)
         try:
-            self.database.add_person(name, id_card, samples, person_id=person_id)
-        except sqlite3.IntegrityError as exc:
+            self.database.add_person(name, id_card, samples, person_id=person_id, library_ids=library_ids)
+        except Exception as exc:
             self._cleanup_files(created)
             try:
                 (self.image_root / person_id).rmdir()
             except OSError:
                 pass
-            if "id_card" in str(exc).lower() or "unique" in str(exc).lower():
+            if isinstance(exc, sqlite3.IntegrityError) and ("id_card" in str(exc).lower() or "unique" in str(exc).lower()):
                 raise EnrollmentError("该身份证号已经存在") from exc
             raise EnrollmentError(f"保存人员失败: {exc}") from exc
         self.engine.refresh_gallery()

@@ -46,6 +46,7 @@ from ..engine import FaceEngine, FrameResult, TrackView
 from ..enrollment import EnrollmentService
 from ..errors import FaceMatchingError, ModelMissingError
 from ..gpu import assert_gpu_available
+from ..identity_filters import PersonFilter, parse_identity, china_today
 from ..models import PROFILES, available_profiles, download_profile, profile_spec, required_paths
 from ..paths import is_frozen_app
 from ..results import VideoMatch, VideoMatchList
@@ -56,6 +57,8 @@ from .person_photos import PersonPhotosDialog
 from .annotation_compare import AnnotationCompareDialog
 from .image_tools import ImageToolsWidget
 from .video_detection import VideoDetectionWidget
+from .portrait_libraries import LibrariesDialog, LibrarySelection, PersonFilterWidget
+from .visual_search import VisualSearchWidget
 
 
 def _rate_limit_due(last_emitted_at: float | None, now: float, interval: float) -> bool:
@@ -76,6 +79,9 @@ class EnrollmentDialog(QDialog):
         form = QFormLayout()
         form.addRow("姓名：", self.name_edit)
         form.addRow("身份证号：", self.id_edit)
+        self.libraries = LibrarySelection(parent.database) if parent is not None and hasattr(parent, 'database') else None
+        if self.libraries is not None:
+            form.addRow("所属人像库（可多选）：", self.libraries)
         self.photos = QListWidget()
         add_button = QPushButton("选择照片…")
         remove_button = QPushButton("移除选中")
@@ -362,22 +368,36 @@ class MainWindow(QMainWindow):
         self.batch_errors: list[str] = []
         self.next_track_id = 1
         self._last_submitted_text = ""
-        self.setWindowTitle(f"Face Matching v{__version__} · GPU 图片 / 视频人脸检索")
+        self.query_filter = PersonFilter()
+        self.people_filter = PersonFilter()
+        self.setWindowTitle(f"Face Matching v{__version__} · 离线综合分析")
         self.resize(1420, 880)
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
         self._build_video_tab()
-        self._build_people_tab()
-        self._build_annotations_tab()
-        self.image_tools = ImageToolsWidget(self)
-        self.tabs.addTab(self.image_tools, "图像增强")
         self.video_detection = VideoDetectionWidget(self.config.gpu_backend, self.config.gpu_device_id, self)
         self.tabs.addTab(self.video_detection, "人车检测")
+        self.image_tools = ImageToolsWidget(self)
+        self.tabs.addTab(self.image_tools, "图像增强")
+        self.visual_search = VisualSearchWidget(self._prepare_search_engine, self)
+        self.visual_search.enhance_requested.connect(self._enhance_search_result)
+        self.tabs.addTab(self.visual_search, "以图搜索")
+        self._build_people_tab()
+        self._build_annotations_tab()
         self._build_settings_tab()
         self.setStatusBar(QStatusBar())
-        self.statusBar().showMessage("正在检查 GPU…")
+        self.refresh_people()
+        self._set_video_enabled(True)
+        self.statusBar().showMessage("已就绪 · 首次检索或录入人员时初始化人脸模型；人车检测和图像增强可直接使用")
+        self._initializing = False
 
     def initialize(self) -> bool:
+        if self.engine is not None:
+            return True
+        if self._initializing:
+            return False
+        self._initializing = True
+        QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             gpu_status = assert_gpu_available(
                 self.config.gpu_backend, self.config.gpu_device_id
@@ -387,7 +407,7 @@ class MainWindow(QMainWindow):
             except ModelMissingError:
                 if is_frozen_app():
                     raise ModelMissingError(
-                        "离线便携包缺少当前模型。请使用完整的 v2.6 离线包，"
+                        "离线便携包缺少当前模型。请使用完整离线包，"
                         "或在联网构建机上重新打包；目标机不会尝试联网下载。"
                     )
                 profile = profile_spec(self.config.model_profile)
@@ -423,9 +443,15 @@ class MainWindow(QMainWindow):
                 )
             return True
         except (FaceMatchingError, OSError, ValueError) as exc:
-            QMessageBox.critical(self, "无法启动 GPU 推理", str(exc))
-            self.statusBar().showMessage("GPU 推理不可用")
+            self.engine = None
+            self.enrollment = None
+            self.model_label.setText(f"人脸模型不可用：{exc}")
+            QMessageBox.warning(self, "人脸检索暂不可用", str(exc))
+            self.statusBar().showMessage("人脸检索初始化失败，可重试；其它功能仍可使用")
             return False
+        finally:
+            self._initializing = False
+            QApplication.restoreOverrideCursor()
 
     def _download_models(self) -> None:
         progress = QProgressDialog("准备下载…", "取消", 0, 100, self)
@@ -492,6 +518,9 @@ class MainWindow(QMainWindow):
         body.addWidget(self.video_label, 3)
         body.addWidget(self.events, 2)
         layout = QVBoxLayout(tab)
+        self.query_filters = PersonFilterWidget(self.database)
+        self.query_filters.apply.clicked.connect(self.apply_query_filter)
+        layout.addWidget(self.query_filters)
         layout.addLayout(source_row)
         self.queue_label = QLabel("支持多选图片和视频；选择或输入后自动比对，处理中可继续添加。")
         self.queue_label.setWordWrap(True)
@@ -513,8 +542,8 @@ class MainWindow(QMainWindow):
     def _build_people_tab(self) -> None:
         tab = QWidget()
         self.tabs.addTab(tab, "人员库")
-        self.people_table = QTableWidget(0, 5)
-        self.people_table.setHorizontalHeaderLabels(["姓名", "身份证号", "照片数", "更新时间", "内部 ID"])
+        self.people_table = QTableWidget(0, 9)
+        self.people_table.setHorizontalHeaderLabels(["姓名", "身份证号", "照片数", "更新时间", "内部 ID", "人像库", "性别", "周岁", "身份证地区码"])
         self.people_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.people_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.people_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -525,6 +554,10 @@ class MainWindow(QMainWindow):
         rebuild = QPushButton("重建当前模型特征")
         delete = QPushButton("删除人员")
         refresh = QPushButton("刷新")
+        libraries = QPushButton("管理人像库…")
+        libraries.clicked.connect(self.manage_libraries)
+        membership = QPushButton("设置所属库…")
+        membership.clicked.connect(self.set_person_libraries)
         add.clicked.connect(self.add_person)
         edit.clicked.connect(self.edit_person)
         photos.clicked.connect(self.add_photos)
@@ -534,10 +567,13 @@ class MainWindow(QMainWindow):
         delete.clicked.connect(self.delete_person)
         refresh.clicked.connect(self.refresh_people)
         row = QHBoxLayout()
-        for button in (add, edit, view_photos, photos, rebuild, delete, refresh):
+        for button in (add, edit, view_photos, photos, libraries, membership, rebuild, delete, refresh):
             row.addWidget(button)
         row.addStretch()
         layout = QVBoxLayout(tab)
+        self.people_filters = PersonFilterWidget(self.database)
+        self.people_filters.apply.clicked.connect(self.apply_people_filter)
+        layout.addWidget(self.people_filters)
         layout.addLayout(row)
         layout.addWidget(self.people_table)
 
@@ -686,8 +722,10 @@ class MainWindow(QMainWindow):
         self.min_face_size.setRange(12, 160)
         self.min_face_size.setSuffix(" px")
         self.min_face_size.setValue(self.config.min_face_size)
-        self.gpu_label = QLabel("尚未检查")
-        self.model_label = QLabel("尚未检查")
+        self.gpu_label = QLabel("使用推理功能时检查")
+        self.model_label = QLabel("首次检索或录入人员时加载")
+        initialize = QPushButton("检查 / 初始化人脸模型")
+        initialize.clicked.connect(lambda: self.initialize())
         save = QPushButton("保存设置")
         save.clicked.connect(self.save_settings)
         form = QFormLayout()
@@ -704,6 +742,7 @@ class MainWindow(QMainWindow):
         form.addRow("每隔 N 帧推理：", self.frame_interval)
         form.addRow("GPU 状态：", self.gpu_label)
         form.addRow("模型状态：", self.model_label)
+        form.addRow("", initialize)
         form.addRow("", save)
         note = QLabel(
             "阈值必须用现场摄像头数据校准。高安全场景建议提高相似度阈值，并保留人工复核；"
@@ -738,7 +777,7 @@ class MainWindow(QMainWindow):
 
     def _auto_start_source(self) -> None:
         text = self.source_edit.text().strip()
-        if not self.engine or text == self._last_submitted_text:
+        if text == self._last_submitted_text:
             return
         sources = self._parse_sources(text)
         if sources and all(is_image_data_uri(source) or source.isdigit() or "://" in source
@@ -750,8 +789,6 @@ class MainWindow(QMainWindow):
         self._submit_sources(["0"])
 
     def start_video(self) -> None:
-        if not self.engine:
-            return
         sources = self._parse_sources(self.source_edit.text())
         if not sources:
             QMessageBox.warning(self, "缺少检索来源", "请选择图片、视频，或输入流地址、摄像头编号。")
@@ -759,7 +796,10 @@ class MainWindow(QMainWindow):
         self._submit_sources(sources)
 
     def _submit_sources(self, sources: list[str]) -> None:
-        if not self.engine:
+        if self.visual_search.is_busy() and self.visual_search.worker.mode == 'face':
+            QMessageBox.information(self, "人脸搜索进行中", "请先停止以图搜索中的人脸搜索。")
+            return
+        if not self.initialize():
             return
         self.source_timer.stop()
         normalized = []
@@ -779,12 +819,13 @@ class MainWindow(QMainWindow):
         if not normalized:
             return
         self.source_edit.setText("; ".join(normalized))
-        self._last_submitted_text = self.source_edit.text().strip()
         ongoing = self.worker is not None and (
             self.worker.isRunning() or bool(self.pending_sources) or self._reviewing
         )
         if not ongoing:
             if not self.stop_video():
+                return
+            if not self.apply_query_filter():
                 return
             self.events.setRowCount(0)
             self.video_matches.clear()
@@ -795,6 +836,7 @@ class MainWindow(QMainWindow):
             self.next_track_id = 1
             self.batch_total = self.batch_completed = 0
             self.batch_errors.clear()
+        self._last_submitted_text = self.source_edit.text().strip()
         added = [source for source in normalized if source not in self.pending_sources
                  and (not ongoing or source != self.active_source)]
         self.pending_sources.extend(added)
@@ -1168,10 +1210,13 @@ class MainWindow(QMainWindow):
         PersonPhotosDialog(person, samples, self).exec()
 
     def _require_idle(self) -> bool:
+        if self.visual_search.is_busy() and self.visual_search.worker.mode == 'face':
+            QMessageBox.information(self, "人脸搜索进行中", "请先停止人脸搜索再修改人员库。")
+            return False
         if self.worker and self.worker.isRunning():
             QMessageBox.information(self, "请先停止视频", "修改人员库前请先停止视频识别。")
             return False
-        return self.enrollment is not None
+        return self.initialize()
 
     def add_person(self) -> None:
         if not self._require_idle():
@@ -1185,7 +1230,8 @@ class MainWindow(QMainWindow):
         progress.show()
         QApplication.processEvents()
         try:
-            self.enrollment.add_person(name, id_card, photos)  # type: ignore[union-attr]
+            self.enrollment.add_person(name, id_card, photos,
+                                       library_ids=dialog.libraries.selected_ids())  # type: ignore[union-attr]
             self.refresh_people()
             QMessageBox.information(self, "录入完成", f"已录入 {name}，共 {len(photos)} 张照片。")
         except Exception as exc:
@@ -1241,7 +1287,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "删除失败", str(exc))
 
     def rebuild_features(self) -> None:
-        if not self.engine or not self._require_idle():
+        if not self._require_idle():
             return
         samples = self.database.list_stored_samples()
         if not samples:
@@ -1275,15 +1321,22 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "重建完成", "所有照片特征已更新为当前模型。")
 
     def refresh_people(self) -> None:
-        people = self.database.list_people()
+        today = china_today()
+        people = [person for person in self.database.list_people()
+                  if self.people_filter.matches(person.id_card, person.library_ids, today)]
         self.people_table.setRowCount(len(people))
         for row, person in enumerate(people):
+            details = parse_identity(person.id_card, today)
             values = (
                 person.name,
                 person.id_card,
                 str(person.photo_count),
                 person.updated_at.replace("T", " ")[:19],
                 person.id[:10],
+                "、".join(person.library_names),
+                details.sex if details else "未知（证号无效）",
+                str(details.age_on(today)) if details else "—",
+                details.region_code if details else "—",
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
@@ -1291,7 +1344,66 @@ class MainWindow(QMainWindow):
                     item.setData(Qt.UserRole, person.id)
                 self.people_table.setItem(row, column, item)
 
+    def apply_people_filter(self) -> None:
+        try:
+            self.people_filter = self.people_filters.value()
+            self.refresh_people()
+        except ValueError as exc:
+            QMessageBox.warning(self, "筛选条件无效", str(exc))
+
+    def apply_query_filter(self) -> bool:
+        if self.worker and (self.worker.isRunning() or self.pending_sources):
+            QMessageBox.information(self, "检索进行中", "请停止当前批次后再应用新的筛选条件。")
+            return False
+        try:
+            self.query_filter = self.query_filters.value()
+        except ValueError as exc:
+            QMessageBox.warning(self, "筛选条件无效", str(exc))
+            return False
+        if self.engine is not None and hasattr(self.engine, 'matcher'):
+            self.engine.matcher.person_filter = self.query_filter
+            self.engine.refresh_gallery()
+            self.statusBar().showMessage(f"筛选已应用 · 参与比对 {self.engine.matcher.person_count} 人")
+        return True
+
+    def manage_libraries(self) -> None:
+        if self.worker and self.worker.isRunning():
+            QMessageBox.information(self, "检索进行中", "请先停止检索再修改人像库。")
+            return
+        LibrariesDialog(self.database, self).exec()
+        for filters in (self.people_filters, self.query_filters):
+            filters.refresh_libraries()
+        self.apply_people_filter()
+        self.apply_query_filter()
+
+    def set_person_libraries(self) -> None:
+        person = self._selected_person()
+        if person is None:
+            QMessageBox.information(self, "请选择人员", "请先选择需要分类的人员。")
+            return
+        if self.worker and self.worker.isRunning():
+            QMessageBox.information(self, "检索进行中", "请先停止检索再修改人员所属库。")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"设置 {person.name} 的所属人像库")
+        selection = LibrarySelection(self.database, person.library_ids)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("可多选；未勾选时归入默认库。"))
+        layout.addWidget(selection)
+        layout.addWidget(buttons)
+        if dialog.exec() == QDialog.Accepted:
+            self.database.set_person_libraries(person.id, selection.selected_ids())
+            self.refresh_people()
+            if self.engine:
+                self.engine.refresh_gallery()
+
     def save_settings(self) -> None:
+        if self.visual_search.is_busy() and self.visual_search.worker.mode == 'face':
+            QMessageBox.information(self, "人脸搜索进行中", "请停止人脸搜索后再修改推理设置。")
+            return
         new_profile = self.profile_combo.currentData()
         new_backend = self.backend_combo.currentData()
         new_gpu_device_id = self.gpu_device_id.value()
@@ -1334,6 +1446,10 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "设置无效", str(exc))
 
     def closeEvent(self, event: object) -> None:
+        if self.visual_search.is_busy():
+            self.visual_search.stop()
+            event.ignore()
+            return
         if self.video_detection.is_busy():
             self.video_detection.stop()
             event.ignore()
@@ -1350,3 +1466,27 @@ class MainWindow(QMainWindow):
             event.accept()
         else:
             event.ignore()
+
+    def _prepare_search_engine(self):
+        if self.worker and self.worker.isRunning():
+            QMessageBox.information(self, "人脸检索进行中", "请先停止当前人脸检索。")
+            return None
+        return self.engine if self.initialize() else None
+
+    def _enhance_search_result(self, frame, bbox) -> None:
+        if self.image_tools.is_busy():
+            QMessageBox.information(self, "图像增强进行中", "请等待当前处理或导出完成。")
+            return
+        from ..image_enhancement import save_new_png
+
+        directory = self.database.path.parent / 'query_images'
+        path = directory / f'搜索原始帧-{uuid.uuid4().hex}.png'
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            save_new_png(path, frame)
+            if self.image_tools.load_image(path):
+                self.image_tools.region_only.setChecked(True)
+                self.image_tools._select_region(bbox)
+                self.tabs.setCurrentWidget(self.image_tools)
+        except OSError as exc:
+            QMessageBox.warning(self, "无法打开清晰化", str(exc))

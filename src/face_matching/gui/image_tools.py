@@ -8,12 +8,12 @@ import numpy as np
 from PySide6.QtCore import QRectF, Qt, QThread, Signal
 from PySide6.QtGui import QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QGraphicsScene,
+    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QGraphicsScene,
     QGraphicsView, QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
 from ..image_enhancement import (
-    PRESETS, EnhancementSettings, enhance_image, export_enhancement, save_new_png,
+    PRESETS, EnhancementSettings, enhance_image, enhance_region, export_enhancement, save_new_png,
 )
 
 
@@ -98,14 +98,18 @@ class EnhancementWorker(QThread):
     completed = Signal(object, object)
     failed = Signal(str)
 
-    def __init__(self, pixels: np.ndarray, settings: EnhancementSettings, parent: QWidget) -> None:
+    def __init__(self, pixels: np.ndarray, settings: EnhancementSettings, parent: QWidget,
+                 region: tuple[int, int, int, int] | None = None) -> None:
         super().__init__(parent)
         self.pixels = pixels
         self.settings = settings
+        self.region = region
 
     def run(self) -> None:
         try:
-            self.completed.emit(enhance_image(self.pixels, self.settings), self.settings)
+            result = (enhance_region(self.pixels, self.settings, self.region) if self.region
+                      else enhance_image(self.pixels, self.settings))
+            self.completed.emit(result, self.settings)
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -123,6 +127,7 @@ class EnhancementExportWorker(QThread):
         self.processed = tool.processed
         self.settings = tool.applied_settings
         self.region = tool.region
+        self.processing_region = tool.applied_region
 
     def run(self) -> None:
         try:
@@ -131,7 +136,7 @@ class EnhancementExportWorker(QThread):
             else:
                 export_enhancement(
                     self.destination, self.source_name, self.source_bytes, self.original,
-                    self.processed, self.settings, self.region,
+                    self.processed, self.settings, self.region, self.processing_region,
                 )
         except FileExistsError:
             self.failed.emit("文件已存在。为保护原图和已有结果，请换一个新文件名。")
@@ -148,6 +153,9 @@ class ImageToolsWidget(QWidget):
         self.processed: np.ndarray | None = None
         self.applied_settings = EnhancementSettings()
         self.region = None
+        self.applied_region = None
+        self.region_only = QCheckBox("仅处理框选的人脸 / 车牌，框外像素保持原样")
+        self.region_only.toggled.connect(self._parameters_changed)
         self.worker: EnhancementWorker | None = None
         self.export_worker: EnhancementExportWorker | None = None
         self.export_failed = False
@@ -195,6 +203,7 @@ class ImageToolsWidget(QWidget):
         note.setWordWrap(True)
         settings = QVBoxLayout()
         settings.addLayout(form)
+        settings.addWidget(self.region_only)
         settings.addWidget(note)
         settings.addStretch()
         settings_widget = QWidget()
@@ -237,9 +246,12 @@ class ImageToolsWidget(QWidget):
 
     def _update_buttons(self) -> None:
         busy = self.is_busy()
+        self.region_only.setEnabled(not busy)
+        self.original_view.setEnabled(not busy)
         self.open_button.setEnabled(not busy)
-        self.apply_button.setEnabled(self.original is not None and not busy)
-        current = self.processed is not None and self.settings() == self.applied_settings
+        self.apply_button.setEnabled(self.original is not None and not busy
+                                    and (not self.region_only.isChecked() or self.region is not None))
+        current = self._is_current()
         self.png_button.setEnabled(current and not busy)
         self.zip_button.setEnabled(current and not busy)
         self.preset.setEnabled(not busy)
@@ -248,8 +260,13 @@ class ImageToolsWidget(QWidget):
 
     def _parameters_changed(self) -> None:
         self._update_buttons()
-        if self.original is not None and self.settings() != self.applied_settings:
+        if self.original is not None and not self._is_current():
             self.status.setText("参数已修改，点击“应用参数”更新结果后再导出。")
+
+    def _is_current(self) -> bool:
+        return (self.processed is not None and self.settings() == self.applied_settings
+                and (not self.region_only.isChecked() or self.region is not None)
+                and self.applied_region == (self.region if self.region_only.isChecked() else None))
 
     def _preset_changed(self, name: str) -> None:
         for field, value in asdict(PRESETS[name]).items():
@@ -281,6 +298,7 @@ class ImageToolsWidget(QWidget):
         self.original = image
         self.processed = image.copy()
         self.applied_settings = EnhancementSettings()
+        self.applied_region = None
         self.region = None
         for view in (self.original_view, self.processed_view):
             view.set_region(None)
@@ -294,7 +312,11 @@ class ImageToolsWidget(QWidget):
     def _apply(self) -> None:
         if self.original is None or self.is_busy():
             return
-        self.worker = EnhancementWorker(self.original, self.settings(), self)
+        if self.region_only.isChecked() and self.region is None:
+            self.status.setText("请先在原图上框选需要清晰化的人脸或车牌。")
+            return
+        self.worker = EnhancementWorker(self.original, self.settings(), self,
+                                        self.region if self.region_only.isChecked() else None)
         self.worker.completed.connect(self._processed)
         self.worker.failed.connect(self._processing_failed)
         self.worker.finished.connect(self._processing_finished)
@@ -305,8 +327,10 @@ class ImageToolsWidget(QWidget):
     def _processed(self, image: np.ndarray, settings: EnhancementSettings) -> None:
         self.processed = image
         self.applied_settings = settings
+        self.applied_region = self.worker.region
         self.processed_view.set_image(image)
         self._fit()
+        self._parameters_changed()
         self.status.setText(f"处理完成 · {self.source_name} · 可框选局部比较或导出。")
 
     def _processing_failed(self, message: str) -> None:
@@ -323,6 +347,7 @@ class ImageToolsWidget(QWidget):
             view.set_region(region)
         self.region_label.setText(f"原图坐标：{region}" if region else "未选择局部")
         self._fit()
+        self._parameters_changed()
 
     def _fit(self) -> None:
         for view in (self.original_view, self.processed_view):
@@ -333,7 +358,7 @@ class ImageToolsWidget(QWidget):
             view.actual_size()
 
     def _export(self, png_only: bool) -> None:
-        if self.processed is None or self.is_busy() or self.settings() != self.applied_settings:
+        if self.is_busy() or not self._is_current():
             return
         extension = ".png" if png_only else ".zip"
         path, _ = QFileDialog.getSaveFileName(

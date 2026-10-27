@@ -32,6 +32,8 @@ class PersonRecord:
     photo_count: int
     created_at: str
     updated_at: str
+    library_ids: tuple[str, ...] = ()
+    library_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +43,7 @@ class GallerySample:
     id_card: str
     embedding: np.ndarray
     quality: float
+    library_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,8 +119,21 @@ class FaceDatabase:
                 );
                 CREATE INDEX IF NOT EXISTS idx_annotations_session
                     ON recognition_annotations(session_id, track_id);
+                CREATE TABLE IF NOT EXISTS portrait_libraries (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE
+                );
+                INSERT OR IGNORE INTO portrait_libraries VALUES('default', '默认库');
+                CREATE TABLE IF NOT EXISTS person_libraries (
+                    person_id TEXT NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+                    library_id TEXT NOT NULL REFERENCES portrait_libraries(id) ON DELETE CASCADE,
+                    PRIMARY KEY(person_id, library_id)
+                );
                 """
             )
+            if connection.execute("PRAGMA user_version").fetchone()[0] < 1:
+                connection.execute("INSERT OR IGNORE INTO person_libraries SELECT id, 'default' FROM persons")
+                connection.execute("PRAGMA user_version = 1")
 
     def add_person(
         self,
@@ -125,6 +141,7 @@ class FaceDatabase:
         id_card: str,
         samples: list[FaceSampleInput],
         person_id: str | None = None,
+        library_ids: list[str] | None = None,
     ) -> str:
         name, id_card = name.strip(), id_card.strip()
         if not name or not id_card:
@@ -139,6 +156,8 @@ class FaceDatabase:
                 (identifier, name, id_card, timestamp, timestamp),
             )
             self._insert_samples(connection, identifier, samples, timestamp)
+            connection.executemany("INSERT INTO person_libraries VALUES(?,?)",
+                                   [(identifier, value) for value in dict.fromkeys(library_ids or ['default'])])
         return identifier
 
     @staticmethod
@@ -208,8 +227,13 @@ class FaceDatabase:
             ).fetchone()
         return self._person_from_row(row) if row else None
 
-    @staticmethod
-    def _person_from_row(row: sqlite3.Row) -> PersonRecord:
+    def _person_from_row(self, row: sqlite3.Row, libraries=None) -> PersonRecord:
+        if libraries is None:
+            with self._connect() as connection:
+                libraries = connection.execute(
+                    "SELECT l.id, l.name FROM portrait_libraries l JOIN person_libraries p ON l.id=p.library_id "
+                    "WHERE p.person_id=? ORDER BY l.name", (row['id'],)
+                ).fetchall()
         return PersonRecord(
             id=row["id"],
             name=row["name"],
@@ -217,16 +241,71 @@ class FaceDatabase:
             photo_count=int(row["photo_count"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            library_ids=tuple(item['id'] for item in libraries),
+            library_names=tuple(item['name'] for item in libraries),
         )
+
+    def list_libraries(self) -> list[tuple[str, str]]:
+        with self._connect() as connection:
+            return [(row['id'], row['name']) for row in connection.execute(
+                "SELECT id, name FROM portrait_libraries ORDER BY name")]
+
+    def create_library(self, name: str) -> str:
+        name = name.strip()
+        if not name or len(name) > 100:
+            raise ValueError("库名称须为 1～100 个字符")
+        identifier = uuid.uuid4().hex
+        try:
+            with self._connect() as connection:
+                connection.execute("INSERT INTO portrait_libraries VALUES(?,?)", (identifier, name))
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("该库名称已经存在") from exc
+        return identifier
+
+    def rename_library(self, library_id: str, name: str) -> None:
+        name = name.strip()
+        if library_id == 'default':
+            raise ValueError("默认库不能重命名")
+        if not name or len(name) > 100:
+            raise ValueError("库名称须为 1～100 个字符")
+        try:
+            with self._connect() as connection:
+                if not connection.execute("UPDATE portrait_libraries SET name=? WHERE id=?", (name, library_id)).rowcount:
+                    raise KeyError("库不存在")
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("该库名称已经存在") from exc
+
+    def delete_library(self, library_id: str) -> None:
+        if library_id == 'default':
+            raise ValueError("默认库不能删除")
+        with self._connect() as connection:
+            connection.execute("DELETE FROM portrait_libraries WHERE id=?", (library_id,))
+            connection.execute("INSERT OR IGNORE INTO person_libraries SELECT id, 'default' FROM persons "
+                               "WHERE id NOT IN (SELECT person_id FROM person_libraries)")
+
+    def set_person_libraries(self, person_id: str, library_ids: list[str]) -> None:
+        with self._connect() as connection:
+            if not connection.execute("SELECT 1 FROM persons WHERE id=?", (person_id,)).fetchone():
+                raise KeyError("人员不存在")
+            connection.execute("DELETE FROM person_libraries WHERE person_id=?", (person_id,))
+            connection.executemany("INSERT INTO person_libraries VALUES(?,?)",
+                                   [(person_id, value) for value in dict.fromkeys(library_ids or ['default'])])
+            connection.execute("UPDATE persons SET updated_at=? WHERE id=?", (_now(), person_id))
 
     def list_people(self) -> list[PersonRecord]:
         with self._connect() as connection:
+            libraries: dict[str, list] = {}
+            for item in connection.execute(
+                "SELECT p.person_id, l.id, l.name FROM person_libraries p JOIN portrait_libraries l "
+                "ON l.id=p.library_id ORDER BY l.name"
+            ):
+                libraries.setdefault(item['person_id'], []).append(item)
             rows = connection.execute(
                 """SELECT p.*, COUNT(s.id) AS photo_count FROM persons p
                    LEFT JOIN face_samples s ON s.person_id=p.id
                    GROUP BY p.id ORDER BY p.name COLLATE NOCASE, p.created_at"""
             ).fetchall()
-        return [self._person_from_row(row) for row in rows]
+        return [self._person_from_row(row, libraries.get(row['id'], [])) for row in rows]
 
     def delete_person(self, person_id: str) -> list[str]:
         with self._connect() as connection:
@@ -243,6 +322,9 @@ class FaceDatabase:
 
     def list_gallery(self, model_id: str) -> list[GallerySample]:
         with self._connect() as connection:
+            memberships: dict[str, list[str]] = {}
+            for member in connection.execute("SELECT person_id, library_id FROM person_libraries"):
+                memberships.setdefault(member['person_id'], []).append(member['library_id'])
             rows = connection.execute(
                 """SELECT p.id AS person_id, p.name, p.id_card,
                           s.embedding, s.embedding_dim, s.quality
@@ -262,6 +344,7 @@ class FaceDatabase:
                     id_card=row["id_card"],
                     embedding=embedding,
                     quality=float(row["quality"]),
+                    library_ids=tuple(memberships.get(row['person_id'], [])),
                 )
             )
         return result

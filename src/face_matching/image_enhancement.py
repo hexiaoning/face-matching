@@ -34,6 +34,8 @@ class EnhancementSettings:
 PRESETS = {
     "原始参数": EnhancementSettings(),
     "保守增强": EnhancementSettings(denoise=0.25, contrast=0.8, sharpen=0.15),
+    "人脸清晰化（保守）": EnhancementSettings(denoise=0.3, contrast=0.6, sharpen=0.2),
+    "车牌清晰化（保守）": EnhancementSettings(denoise=0.2, contrast=1.0, sharpen=0.3),
     "屏幕翻拍": EnhancementSettings(texture=0.9, denoise=0.3, contrast=0.6),
     "暗部提亮": EnhancementSettings(denoise=0.3, gamma=1.35, contrast=0.8),
 }
@@ -75,6 +77,16 @@ def encode_png(image: np.ndarray) -> bytes:
     return payload.tobytes()
 
 
+def enhance_region(image: np.ndarray, settings: EnhancementSettings,
+                   region: tuple[int, int, int, int]) -> np.ndarray:
+    x1, y1, x2, y2 = region
+    if not (0 <= x1 < x2 <= image.shape[1] and 0 <= y1 < y2 <= image.shape[0]):
+        raise ValueError("局部选区超出图片范围")
+    result = image.copy()
+    result[y1:y2, x1:x2] = enhance_image(image[y1:y2, x1:x2], settings)
+    return result
+
+
 def save_new_png(destination: Path, image: np.ndarray) -> None:
     payload = encode_png(image)
     with destination.open("xb") as stream:
@@ -90,6 +102,7 @@ def export_enhancement(
     destination: Path, source_name: str, source_bytes: bytes, original: np.ndarray,
     processed: np.ndarray, settings: EnhancementSettings,
     region: tuple[int, int, int, int] | None = None,
+    processing_region: tuple[int, int, int, int] | None = None,
 ) -> None:
     """Export an exclusive ZIP: existing files (including the source) are safe."""
     settings.validate()
@@ -114,6 +127,7 @@ def export_enhancement(
         "source_name": Path(source_name).name,
         "width": width, "height": height,
         "settings": asdict(settings), "region_xyxy": region,
+        "processing_region_xyxy": processing_region,
         "notice": "仅作像素调整；清晰化不等于恢复真实细节，无法确认缺失的人脸细节或车牌字符。",
         "sha256": {name: hashlib.sha256(payload).hexdigest() for name, payload in files.items()},
     }

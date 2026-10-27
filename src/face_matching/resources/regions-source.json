@@ -1,0 +1,8 @@
+{
+  "source": "https://raw.githubusercontent.com/modood/Administrative-divisions-of-China/c49d495b40ac73eb1a66f6eeae5f8fd10696f035/dist/pca-code.json",
+  "commit": "c49d495b40ac73eb1a66f6eeae5f8fd10696f035",
+  "data_date": "2023-06-30",
+  "sha256": "83b7536f853ad16beb4d37b92890a3fd7bb9d33d4f37e7c8885fb948749a9bc4",
+  "license": "WTFPL",
+  "notice": "历史区划名称参考，不验证地址码有效性，不代表当前户籍。"
+}
