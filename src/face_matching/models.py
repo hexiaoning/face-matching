@@ -44,6 +44,15 @@ SCRFD_10G = ModelFile(
     size=16_923_827,
 )
 
+# RT-DETRv2-R50, pinned ONNX conversion of PekingU's Apache-2.0 weights.
+PERSON_VEHICLE_MODEL = ModelFile(
+    name="rtdetr_v2_r50vd.onnx",
+    url=("https://huggingface.co/onnx-community/rtdetr_v2_r50vd-ONNX/resolve/"
+         "1699ea019e5570bb7283d80ee9a9e42d6245436f/onnx/model.onnx"),
+    sha256="d6d5ce9f633189539bc892c70b6a60120a32a9799798811daeb8456f9b9e2c15",
+    size=172_305_665,
+)
+
 PROFILES: dict[str, ModelProfile] = {
     "lvface-b": ModelProfile(
         key="lvface-b",
@@ -203,11 +212,31 @@ def download_profile(
     return detector, recognizer
 
 
+def required_person_vehicle_model(root: Path | None = None) -> Path:
+    directories = [root] if root is not None else [models_dir(), packaged_models_dir()]
+    for directory in directories:
+        if directory is not None:
+            path = directory / PERSON_VEHICLE_MODEL.name
+            if is_valid_model(path, PERSON_VEHICLE_MODEL, verify_hash=True):
+                return path
+    raise ModelMissingError(
+        "缺少或损坏的人车检测模型。请使用包含人车检测模型的完整离线 ZIP；"
+        "联网开发机可运行 python -m face_matching.models download --person-vehicle。"
+    )
+
+
+def download_person_vehicle_model(root: Path | None = None, progress: ProgressCallback | None = None) -> Path:
+    directory = root or models_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    return _download_one(PERSON_VEHICLE_MODEL, directory, progress, None)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="下载并校验 Face Matching 模型")
     parser.add_argument("command", choices=["download", "verify"])
     parser.add_argument("--profile", choices=sorted(PROFILES), default="lvface-b")
     parser.add_argument("--directory", type=Path)
+    parser.add_argument("--person-vehicle", action="store_true", help="仅下载/校验人车检测模型")
     args = parser.parse_args(argv)
 
     def show(name: str, done: int, total: int) -> None:
@@ -217,6 +246,13 @@ def main(argv: list[str] | None = None) -> int:
             print()
 
     try:
+        if args.person_vehicle:
+            if args.command == "download":
+                download_person_vehicle_model(args.directory, show)
+            else:
+                required_person_vehicle_model(args.directory)
+            print("人车检测模型已就绪。")
+            return 0
         if args.command == "download":
             download_profile(args.profile, args.directory, show)
         else:

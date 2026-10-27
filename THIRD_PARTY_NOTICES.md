@@ -8,6 +8,7 @@
 | OpenVINO | Intel GPU 推理 | Apache-2.0 |
 | PySide6 / Qt | 桌面 GUI | LGPLv3/GPLv3/商业许可；交付前按所选 Qt 许可履行义务 |
 | OpenCV | 视频与图像处理 | Apache-2.0 |
+| RT-DETRv2-R50 / ONNX Community 导出 | 人和车辆的类别、位置及置信度检测 | 作者 lyuwenyu / PekingU，Apache-2.0；ONNX 导出固定版本 1699ea019e5570bb7283d80ee9a9e42d6245436f；许可证随包保存在 licenses/RT-DETR-LICENSE.txt |
 | NumPy | 数值计算 | BSD-3-Clause |
 | NVIDIA CUDA/cuDNN/cuBLAS wheels | GPU 运行库 | NVIDIA SDK/EULA 条款 |
 | SCRFD-10G | 人脸检测 | 参见 InsightFace/AuraFace 模型来源和适用条款 |

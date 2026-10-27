@@ -188,7 +188,8 @@ def _port_shape(port: Any) -> list[object]:
 class OpenVINOInferenceSession:
     """Small ORT-compatible adapter that compiles an ONNX model on Intel GPU."""
 
-    def __init__(self, model_path: str | Path, device_id: int = 0) -> None:
+    def __init__(self, model_path: str | Path, device_id: int = 0,
+                 input_shape: tuple[int, int, int, int] | None = None) -> None:
         ov = _load_openvino()
         self._ov = ov
         self._core = ov.Core()
@@ -196,6 +197,8 @@ class OpenVINOInferenceSession:
         path = Path(model_path).resolve()
         try:
             model = self._core.read_model(str(path))
+            if input_shape is not None:
+                model.reshape({0: list(input_shape)})
             self._compiled = self._core.compile_model(
                 model,
                 self.device,
@@ -367,9 +370,12 @@ def _create_cuda_session(model_path: Path, device_id: int = 0) -> Any:
 
 
 def create_gpu_session(
-    model_path: Path, device_id: int = 0, backend: str = "auto"
+    model_path: Path, device_id: int = 0, backend: str = "auto",
+    input_shape: tuple[int, int, int, int] | None = None,
 ) -> Any:
     selected = resolve_gpu_backend(backend, device_id)
     if selected == "cuda":
         return _create_cuda_session(model_path, device_id)
+    if input_shape is not None:
+        return OpenVINOInferenceSession(model_path, device_id, input_shape=input_shape)
     return OpenVINOInferenceSession(model_path, device_id)

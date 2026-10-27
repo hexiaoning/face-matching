@@ -55,6 +55,7 @@ from .export_dialog import AnnotationExportDialog, AnnotationExportWorker
 from .person_photos import PersonPhotosDialog
 from .annotation_compare import AnnotationCompareDialog
 from .image_tools import ImageToolsWidget
+from .video_detection import VideoDetectionWidget
 
 
 def _rate_limit_due(last_emitted_at: float | None, now: float, interval: float) -> bool:
@@ -370,6 +371,8 @@ class MainWindow(QMainWindow):
         self._build_annotations_tab()
         self.image_tools = ImageToolsWidget(self)
         self.tabs.addTab(self.image_tools, "图像增强")
+        self.video_detection = VideoDetectionWidget(self.config.gpu_backend, self.config.gpu_device_id, self)
+        self.tabs.addTab(self.video_detection, "人车检测")
         self._build_settings_tab()
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage("正在检查 GPU…")
@@ -1331,6 +1334,10 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "设置无效", str(exc))
 
     def closeEvent(self, event: object) -> None:
+        if self.video_detection.is_busy():
+            self.video_detection.stop()
+            event.ignore()
+            return
         if self.image_tools.is_busy():
             QMessageBox.information(self, "图像增强", "请等待图片处理或导出完成后再关闭。")
             event.ignore()

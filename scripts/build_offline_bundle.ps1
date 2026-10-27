@@ -88,6 +88,8 @@ foreach ($Profile in $Profiles) {
     Invoke-CheckedPython -Arguments @("-m", "face_matching.models", "download", "--profile", $Profile, "--directory", $ModelRoot)
     Invoke-CheckedPython -Arguments @("-m", "face_matching.models", "verify", "--profile", $Profile, "--directory", $ModelRoot)
 }
+Invoke-CheckedPython -Arguments @("-m", "face_matching.models", "download", "--person-vehicle", "--directory", $ModelRoot)
+Invoke-CheckedPython -Arguments @("-m", "face_matching.models", "verify", "--person-vehicle", "--directory", $ModelRoot)
 
 if (-not $SkipTests) {
     Write-Host "[3/5] Running unit tests before packaging..." -ForegroundColor Cyan
@@ -132,6 +134,8 @@ Copy-Item -LiteralPath (Join-Path $ProjectRoot "packaging\安装并启动 Face M
     -Destination (Join-Path $ReleaseDirectory "安装并启动 Face Matching.cmd") -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "packaging\打开图像增强.cmd") `
     -Destination (Join-Path $ReleaseDirectory "打开图像增强.cmd") -Force
+Copy-Item -LiteralPath (Join-Path $ProjectRoot "packaging\打开人车检测.cmd") `
+    -Destination (Join-Path $ReleaseDirectory "打开人车检测.cmd") -Force
 
 Write-Host "[5/5] Creating a Zip64 archive and SHA-256 manifests..." -ForegroundColor Cyan
 Invoke-CheckedPython -Arguments @((Join-Path $ProjectRoot "scripts\create_release_archive.py"), $ReleaseDirectory, $Archive)

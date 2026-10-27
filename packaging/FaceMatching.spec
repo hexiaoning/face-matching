@@ -19,6 +19,7 @@ datas = [
     (str(model_root), "models"),
     (str(project_root / "README.md"), "."),
     (str(project_root / "THIRD_PARTY_NOTICES.md"), "."),
+    (str(project_root / "packaging" / "licenses" / "RT-DETR-LICENSE.txt"), "licenses"),
     (str(project_root / "docs" / "offline-deployment.md"), "docs"),
     (str(project_root / "packaging" / "verify_offline.ps1"), "."),
 ]
