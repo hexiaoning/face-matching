@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "face-matching"
-version = "2.8.0"
-description = "Unified offline face matching, person/vehicle detection and image enhancement for Windows"
+version = "2.9.0"
+description = "Offline face matching, Chinese semantic search, person/vehicle detection and image enhancement for Windows"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 dependencies = [

@@ -189,7 +189,8 @@ class OpenVINOInferenceSession:
     """Small ORT-compatible adapter that compiles an ONNX model on Intel GPU."""
 
     def __init__(self, model_path: str | Path, device_id: int = 0,
-                 input_shape: tuple[int, int, int, int] | None = None) -> None:
+                 input_shape: tuple[int, int, int, int] | None = None,
+                 input_shapes: dict[str, tuple[int, ...]] | None = None) -> None:
         ov = _load_openvino()
         self._ov = ov
         self._core = ov.Core()
@@ -199,6 +200,8 @@ class OpenVINOInferenceSession:
             model = self._core.read_model(str(path))
             if input_shape is not None:
                 model.reshape({0: list(input_shape)})
+            if input_shapes is not None:
+                model.reshape({name: list(shape) for name, shape in input_shapes.items()})
             self._compiled = self._core.compile_model(
                 model,
                 self.device,
@@ -237,10 +240,9 @@ class OpenVINOInferenceSession:
     def run(
         self, output_names: list[str] | None, inputs: dict[str, np.ndarray]
     ) -> list[np.ndarray]:
-        if len(self._inputs) != 1:
-            raise RuntimeError("人脸模型必须只有一个输入")
-        array = np.ascontiguousarray(inputs[self._inputs[0].name])
-        self._request.set_input_tensor(0, self._ov.Tensor(array))
+        for index, metadata in enumerate(self._inputs):
+            array = np.ascontiguousarray(inputs[metadata.name])
+            self._request.set_input_tensor(index, self._ov.Tensor(array))
         self._request.infer()
         names = output_names or [item.name for item in self._outputs]
         return [
@@ -309,22 +311,25 @@ def _check_cuda_profile(events: list[dict[str, Any]]) -> None:
         raise GPUUnavailableError("模型自检未发现真实 CUDA 计算节点，拒绝使用 CPU 推理。")
 
 
-def _verify_cuda_execution(session: Any) -> None:
+def _verify_cuda_execution(session: Any, sample_inputs: dict[str, np.ndarray] | None = None) -> None:
     inputs = session.get_inputs()
-    if len(inputs) != 1 or len(inputs[0].shape) != 4 or inputs[0].type != "tensor(float)":
-        raise GPUUnavailableError("人脸模型必须只有一个 NCHW float32 输入")
-    shape = [
-        value if isinstance(value, int) and value > 0 else (1, 3, 640, 640)[index]
-        for index, value in enumerate(inputs[0].shape)
-    ]
-    outputs = session.run(None, {inputs[0].name: np.zeros(shape, dtype=np.float32)})
+    if sample_inputs is None:
+        if len(inputs) != 1 or len(inputs[0].shape) != 4 or inputs[0].type != "tensor(float)":
+            raise GPUUnavailableError("人脸模型必须只有一个 NCHW float32 输入")
+        shape = [
+            value if isinstance(value, int) and value > 0 else (1, 3, 640, 640)[index]
+            for index, value in enumerate(inputs[0].shape)
+        ]
+        sample_inputs = {inputs[0].name: np.zeros(shape, dtype=np.float32)}
+    outputs = session.run(None, sample_inputs)
     if not outputs or any(not np.isfinite(output).all() for output in outputs):
         raise GPUUnavailableError("CUDA 模型自检没有返回有效输出")
     profile = Path(session.end_profiling())
     _check_cuda_profile(json.loads(profile.read_text(encoding="utf-8")))
 
 
-def _create_cuda_session(model_path: Path, device_id: int = 0) -> Any:
+def _create_cuda_session(model_path: Path, device_id: int = 0,
+                         sample_inputs: dict[str, np.ndarray] | None = None) -> Any:
     assert_cuda_available()
     ort = _load_ort()
     options = ort.SessionOptions()
@@ -355,7 +360,7 @@ def _create_cuda_session(model_path: Path, device_id: int = 0) -> Any:
                 providers = session.get_providers()
                 if not providers or providers[0] != "CUDAExecutionProvider":
                     raise GPUUnavailableError(f"{model_path.name} 未使用 CUDAExecutionProvider")
-                _verify_cuda_execution(session)
+                _verify_cuda_execution(session, sample_inputs)
             finally:
                 if session is not None:
                     # Also flush on failures so Windows can remove the temporary
@@ -372,10 +377,14 @@ def _create_cuda_session(model_path: Path, device_id: int = 0) -> Any:
 def create_gpu_session(
     model_path: Path, device_id: int = 0, backend: str = "auto",
     input_shape: tuple[int, int, int, int] | None = None,
+    sample_inputs: dict[str, np.ndarray] | None = None,
 ) -> Any:
     selected = resolve_gpu_backend(backend, device_id)
     if selected == "cuda":
-        return _create_cuda_session(model_path, device_id)
+        return _create_cuda_session(model_path, device_id, sample_inputs)
+    if sample_inputs is not None:
+        return OpenVINOInferenceSession(model_path, device_id,
+                                       input_shapes={name: array.shape for name, array in sample_inputs.items()})
     if input_shape is not None:
         return OpenVINOInferenceSession(model_path, device_id, input_shape=input_shape)
     return OpenVINOInferenceSession(model_path, device_id)

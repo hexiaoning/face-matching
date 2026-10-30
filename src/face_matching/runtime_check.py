@@ -15,7 +15,7 @@ from . import __version__
 from .config import AppConfig
 from .gui.main_window import MainWindow
 from .image_enhancement import PRESETS, encode_png, enhance_image
-from .models import available_profiles, file_sha256, required_paths, required_person_vehicle_model
+from .models import available_profiles, file_sha256, required_paths, required_person_vehicle_model, required_semantic_models
 
 
 def check_runtime(config: AppConfig, *, diagnose: bool = False) -> dict:
@@ -27,6 +27,7 @@ def check_runtime(config: AppConfig, *, diagnose: bool = False) -> dict:
             required_paths(config.model_profile, verify_hash=True)
             profiles = [config.model_profile]
         models = {required_person_vehicle_model()}
+        models.update(required_semantic_models())
         for profile in profiles:
             models.update(required_paths(profile, verify_hash=True))
         pixels = np.full((32, 48, 3), 70, np.uint8)
@@ -78,6 +79,14 @@ def check_runtime(config: AppConfig, *, diagnose: bool = False) -> dict:
                 raise RuntimeError("人车 GPU 推理输出无效")
             report["person_vehicle_gpu"] = {"providers": detector.session.get_providers(),
                                             "sample_detections": len(detector.detect(pixels))}
+            from .semantic_model import SemanticEncoder
+
+            encoder = SemanticEncoder(config.gpu_backend, config.gpu_device_id)
+            text_feature = encoder.text('白色的车')
+            image_feature = encoder.image(pixels)
+            report['semantic_gpu'] = {'providers': encoder.providers(),
+                                      'embedding_dim': int(text_feature.size),
+                                      'sample_similarity': float(text_feature @ image_feature)}
         return report
     finally:
         window.close()

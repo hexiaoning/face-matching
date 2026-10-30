@@ -35,7 +35,7 @@ if ($Profiles.Count -eq 0) {
 foreach ($Profile in @($Profiles[0])) {
     $Report = Join-Path ([IO.Path]::GetTempPath()) ("face-matching-{0}-{1}.json" -f $Profile, [guid]::NewGuid().ToString("N"))
     try {
-        Write-Host "Verifying complete application and all bundled face/person-vehicle models on GPU" -ForegroundColor Cyan
+        Write-Host "Verifying complete application and all bundled face/person-vehicle/semantic models on GPU" -ForegroundColor Cyan
         $Arguments = @("--check-runtime", "--diagnose", "--profile", $Profile, "--report", ('"{0}"' -f $Report))
         $Process = Start-Process -FilePath $Executable -ArgumentList $Arguments -Wait -PassThru -WindowStyle Hidden
         if ($Process.ExitCode -ne 0) {

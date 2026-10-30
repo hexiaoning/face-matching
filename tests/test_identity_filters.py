@@ -134,7 +134,7 @@ def test_failed_face_initialization_keeps_complete_app_and_can_retry(qt_runtime,
         assert not window.initialize()
         assert not window.initialize()
         assert len(errors) == 2
-        assert window.tabs.count() == 7
+        assert window.tabs.count() == 8
         assert window.image_tools.open_button.isEnabled()
         assert window.video_detection.open_button.isEnabled()
         assert window.visual_search.open_button.isEnabled()

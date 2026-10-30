@@ -32,6 +32,7 @@ def main(argv: list[str] | None = None) -> int:
     page = parser.add_mutually_exclusive_group()
     page.add_argument("--image-tools", action="store_true", help="打开综合分析窗口并选中图像增强")
     page.add_argument("--video-detection", action="store_true", help="打开综合分析窗口并选中人车检测")
+    page.add_argument("--semantic-search", action="store_true", help="打开综合分析窗口并选中语义搜索")
     parser.add_argument("--backend", choices=("auto", "cuda", "openvino"), help="覆盖 GPU 后端")
     parser.add_argument("--device-id", type=int, help="覆盖 GPU 编号")
     parser.add_argument("--check-runtime", action="store_true", help="检查完整应用、运行库及全部已打包模型")
@@ -145,6 +146,8 @@ def main(argv: list[str] | None = None) -> int:
         window.tabs.setCurrentWidget(window.image_tools)
     elif args.video_detection:
         window.tabs.setCurrentWidget(window.video_detection)
+    elif args.semantic_search:
+        window.tabs.setCurrentWidget(window.semantic_search)
     try:
         window.show()
         return application.exec()

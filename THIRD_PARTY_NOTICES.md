@@ -10,6 +10,7 @@
 | OpenCV | 视频与图像处理 | Apache-2.0 |
 | RT-DETRv2-R50 / ONNX Community 导出 | 人和车辆的类别、位置及置信度检测 | 作者 lyuwenyu / PekingU，Apache-2.0；ONNX 导出固定版本 1699ea019e5570bb7283d80ee9a9e42d6245436f；许可证随包保存在 licenses/RT-DETR-LICENSE.txt |
 | NumPy | 数值计算 | BSD-3-Clause |
+| Chinese-CLIP ViT-B/16 | 中文衣着与车辆颜色语义检索 | OFA-Sys，MIT；FP32 ONNX转换来自 felixdu/chinese-clip-vit-base-patch16-onnx，固定版本47080d16c631d8416d2e6b155c59f8fd2c322e98；匹配词表来自Xenova固定版本f26904860903e70e050b8f48255e5f48401816e9。两编码器及词表均固定SHA-256，许可证随包保存在licenses/Chinese-CLIP-LICENSE.txt。 |
 | NVIDIA CUDA/cuDNN/cuBLAS wheels | GPU 运行库 | NVIDIA SDK/EULA 条款 |
 | SCRFD-10G | 人脸检测 | 参见 InsightFace/AuraFace 模型来源和适用条款 |
 | LVFace-B Glint360K | 高精度人脸特征 | 代码 MIT；官方预训练权重仅限非商业研究，商用必须另获授权 |

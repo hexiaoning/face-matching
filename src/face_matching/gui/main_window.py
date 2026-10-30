@@ -59,6 +59,7 @@ from .image_tools import ImageToolsWidget
 from .video_detection import VideoDetectionWidget
 from .portrait_libraries import LibrariesDialog, LibrarySelection, PersonFilterWidget
 from .visual_search import VisualSearchWidget
+from .semantic_search import SemanticSearchWidget
 
 
 def _rate_limit_due(last_emitted_at: float | None, now: float, interval: float) -> bool:
@@ -382,6 +383,8 @@ class MainWindow(QMainWindow):
         self.visual_search = VisualSearchWidget(self._prepare_search_engine, self)
         self.visual_search.enhance_requested.connect(self._enhance_search_result)
         self.tabs.addTab(self.visual_search, "以图搜索")
+        self.semantic_search = SemanticSearchWidget(self.config, self)
+        self.tabs.addTab(self.semantic_search, "语义搜索")
         self._build_people_tab()
         self._build_annotations_tab()
         self._build_settings_tab()
@@ -1446,6 +1449,10 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "设置无效", str(exc))
 
     def closeEvent(self, event: object) -> None:
+        if self.semantic_search.is_busy():
+            self.semantic_search.stop()
+            event.ignore()
+            return
         if self.visual_search.is_busy():
             self.visual_search.stop()
             event.ignore()

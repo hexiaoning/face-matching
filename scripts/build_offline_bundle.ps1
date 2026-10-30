@@ -100,6 +100,8 @@ foreach ($Profile in $Profiles) {
 }
 Invoke-CheckedPython -Arguments @("-m", "face_matching.models", "download", "--person-vehicle", "--directory", $ModelRoot)
 Invoke-CheckedPython -Arguments @("-m", "face_matching.models", "verify", "--person-vehicle", "--directory", $ModelRoot)
+Invoke-CheckedPython -Arguments @("-m", "face_matching.models", "download", "--semantic", "--directory", $ModelRoot)
+Invoke-CheckedPython -Arguments @("-m", "face_matching.models", "verify", "--semantic", "--directory", $ModelRoot)
 
 if (-not $SkipTests) {
     Write-Host "[3/5] Running unit tests before packaging..." -ForegroundColor Cyan
@@ -148,7 +150,7 @@ try {
         throw "Packaged Qt GUI runtime smoke test failed (exit $($GuiCheck.ExitCode))."
     }
     $Payload = Get-Content -LiteralPath $GuiReport -Raw -Encoding UTF8 | ConvertFrom-Json
-    $ExpectedTabs = @("人脸检索", "人车检测", "图像增强", "以图搜索", "人员库", "标注库", "设置")
+    $ExpectedTabs = @("人脸检索", "人车检测", "图像增强", "以图搜索", "语义搜索", "人员库", "标注库", "设置")
     if (-not $Payload.ok -or $Payload.version -ne $Version -or ($Payload.tabs -join '|') -ne ($ExpectedTabs -join '|')) {
         throw "Packaged application is incomplete or has the wrong version."
     }

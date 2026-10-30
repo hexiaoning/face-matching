@@ -1,8 +1,12 @@
 # Face Matching 离线综合分析
 
-## v2.8.0 完整功能合一
+## v2.9.0 离线中文语义搜索
 
-一个应用、一个启动入口、一个完整离线 ZIP，统一提供人脸检索、人车检测、图像增强、以图搜索、分类人像库、标注库与设置。旧 `video-analysis` 命令也打开同一个完整应用。
+一个应用、一个启动入口、一个完整离线 ZIP，统一提供人脸检索、人车检测、图像增强、以图搜索、语义搜索、分类人像库、标注库与设置。旧 `video-analysis` 命令也打开同一个完整应用。
+
+- **中文语义搜索**：在“语义搜索”页输入“黑色帽子、蓝色上衣、白色裤子的人”或“白色的车”，添加本地图片、视频、文件夹后搜索。使用离线 Chinese-CLIP 图文编码和 RT-DETRv2 目标检测，衣着颜色条件在同一个人物的头部、上身、下身区域分别比较，不跨人物拼接。首次分析建立本地索引，源文件和抽帧设置不变时可复用；文件变化后重建。结果提供来源、目标框、视频时间点及帧号，双击或点击“从命中位置播放原视频”可定位并播放，可导出 JSON。默认每隔25帧分析，可改为1逐帧；最多保留500条候选。相关分值不是概率，夜视黑白、遮挡、模糊、相近颜色会影响结果。不执行行为理解、身份确认或跨镜追踪。
+
+语义搜索结合局部可见颜色校验，减少背景或近似颜色造成的误命中。人体区域按检测框比例划分，未做姿态估计或像素级服装分割；弯腰、蹲下、身体被截断、白色衣着处于阴影中时可能漏检。帽子增加有帽/无帽语义对比，但头发与深色帽子仍可能混淆。只支持肯定描述，复杂否定与多目标关系不在本版范围内。
 
 - **人脸 / 车牌清晰化**：保守降噪、提亮、对比度和锐化，不使用生成式补画。可框选局部处理，框外像素逐像素保持原样；处理图尺寸、几何位置不变，原始文件保留，可导出原图、处理图和参数记录。无法保证恢复原图中缺失的人脸细节或车牌字符；不包含车牌文字识别。
 - **以图搜索**：打开图片框选一个人或物体，在指定本地图片、视频或文件夹中搜索。人脸模式复用 GPU 人脸模型，无需先录入底库；物体 / 人物外观模式用局部特征、几何校验和多尺度外观匹配，适用于纹理清楚、视角接近的同一目标，不提供文字类别搜索或通用跨视角语义检索。默认逐帧，支持设置抽帧间隔、停止、来源画面预览、JSON记录导出及转入局部清晰化。最多保留500条高分候选，结果需要人工核实。
@@ -19,7 +23,7 @@
 .\scripts\build_offline_bundle.ps1 -AcceptResearchWeights -RunGpuSmoke
 ```
 
-输出 `dist\FaceMatching-v2.8.0-windows-x64.zip`，包含应用、Python、Qt、OpenCV、CUDA/OpenVINO运行库、SCRFD、所选人脸模型和RT-DETRv2，以及ZIP与逐文件SHA-256。可通过 `-Profiles auraface` 仅选宽松许可的人脸模型。已有构建环境可使用 `-Python <python.exe> -SkipDependencyInstall`。构建执行测试、模型校验、完整功能与DLL审计、打包后所有页面渲染和编解码自检，`-RunGpuSmoke`额外验证全部模型的真实GPU推理。只发布完整离线ZIP，不生成增量包或EXE安装程序。
+输出 `dist\FaceMatching-v2.9.0-windows-x64.zip`，包含应用、Python、Qt、OpenCV、CUDA/OpenVINO运行库、SCRFD、所选人脸模型和RT-DETRv2，以及ZIP与逐文件SHA-256。可通过 `-Profiles auraface` 仅选宽松许可的人脸模型。已有构建环境可使用 `-Python <python.exe> -SkipDependencyInstall`。构建执行测试、模型校验、完整功能与DLL审计、打包后所有页面渲染和编解码自检，`-RunGpuSmoke`额外验证全部模型的真实GPU推理。只发布完整离线ZIP，不生成增量包或EXE安装程序。
 
 以下是已有功能的使用说明。
 
@@ -61,7 +65,7 @@ CUDA 启动时执行真实推理并检查节点执行记录，要求存在 CUDA 
 .\scripts\build_offline_bundle.ps1 -Clean -AcceptResearchWeights
 ```
 
-构建脚本会先跑测试，下载并校验固定 SHA-256 的模型，然后把 Python、PySide6、OpenCV、CUDA/OpenVINO GPU 运行库和两套模型一并打入 `dist\FaceMatching-v2.8.0-windows-x64.zip`。目标机不需要 Python、CUDA Toolkit、OpenVINO Toolkit 或互联网；只需预装对应显卡驱动。
+构建脚本会先跑测试，下载并校验固定 SHA-256 的模型，然后把 Python、PySide6、OpenCV、CUDA/OpenVINO GPU 运行库和两套模型一并打入 `dist\FaceMatching-v2.9.0-windows-x64.zip`。目标机不需要 Python、CUDA Toolkit、OpenVINO Toolkit 或互联网；只需预装对应显卡驱动。
 
 目标机解压完整离线 ZIP 后双击 `启动综合分析.cmd`，全部功能在同一窗口内使用。运维自检可运行 `FaceMatching.exe --check-runtime --diagnose --report diagnostics.json`。目标机不会调用 `winget` 或 `pip`。发布仅提供完整离线 ZIP。
 

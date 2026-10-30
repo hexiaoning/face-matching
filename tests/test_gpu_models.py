@@ -165,6 +165,27 @@ def test_session_rejects_cpu_execution_and_cleans_profile(monkeypatch, tmp_path,
     assert not runtime.profile.exists()
 
 
+def test_cuda_text_model_audits_real_multi_input_inference(monkeypatch, tmp_path):
+    class TextOrt(FakeOrt):
+        def get_inputs(self):
+            return [SimpleNamespace(name=name, shape=[1, 52], type='tensor(int64)')
+                    for name in ('input_ids', 'attention_mask')]
+
+        def run(self, output_names, inputs):
+            assert set(inputs) == {'input_ids', 'attention_mask'}
+            assert inputs['input_ids'].dtype == np.int64
+            return [np.ones((1, 512), np.float32)]
+
+    runtime = TextOrt()
+    runtime.events = [kernel('MatMul', 'CUDAExecutionProvider')]
+    monkeypatch.setattr(gpu, '_load_ort', lambda: runtime)
+    monkeypatch.setattr(gpu, 'assert_cuda_available', lambda: 'CUDA test')
+    sample = {name: np.ones((1, 52), np.int64) for name in ('input_ids', 'attention_mask')}
+    session = gpu.create_gpu_session(tmp_path / 'text.onnx', backend='cuda', sample_inputs=sample)
+    assert session.fallback_disabled
+    assert not runtime.profile.exists()
+
+
 def test_auto_backend_prefers_cuda_then_falls_back_to_openvino(monkeypatch):
     monkeypatch.setattr(gpu, "assert_cuda_available", lambda: "CUDA test")
     monkeypatch.setattr(gpu, "assert_openvino_available", lambda device_id=0: "OpenVINO test")

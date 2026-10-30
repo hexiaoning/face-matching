@@ -53,6 +53,27 @@ PERSON_VEHICLE_MODEL = ModelFile(
     size=172_305_665,
 )
 
+# Chinese-CLIP ViT-B/16 FP32, independent projected encoders. Fixed ONNX export
+# of OFA-Sys weights; both encoders and the matching BERT vocabulary ship offline.
+SEMANTIC_REVISION = "47080d16c631d8416d2e6b155c59f8fd2c322e98"
+SEMANTIC_MODEL_ID = "chinese-clip-b16-felixdu-47080d16-fp32-parts-v1"
+SEMANTIC_VISION = ModelFile(
+    "chinese_clip_vision.onnx",
+    f"https://huggingface.co/felixdu/chinese-clip-vit-base-patch16-onnx/resolve/{SEMANTIC_REVISION}/cn_clip_vision.onnx",
+    "980020bf226e528a202de26c6a6186df125b74c612b09cfcd797a082e046b628", 345839119,
+)
+SEMANTIC_TEXT = ModelFile(
+    "chinese_clip_text.onnx",
+    f"https://huggingface.co/felixdu/chinese-clip-vit-base-patch16-onnx/resolve/{SEMANTIC_REVISION}/cn_clip_text.onnx",
+    "5ddc2d8971b09acda8063048003d18cca9b587f089a1c0a4df7d35624bd0fcea", 409585120,
+)
+SEMANTIC_VOCAB = ModelFile(
+    "chinese_clip_vocab.txt",
+    "https://huggingface.co/Xenova/chinese-clip-vit-base-patch16/resolve/f26904860903e70e050b8f48255e5f48401816e9/vocab.txt",
+    "45bbac6b341c319adc98a532532882e91a9cefc0329aa57bac9ae761c27b291c", 109540,
+)
+SEMANTIC_FILES = (SEMANTIC_VISION, SEMANTIC_TEXT, SEMANTIC_VOCAB)
+
 PROFILES: dict[str, ModelProfile] = {
     "lvface-b": ModelProfile(
         key="lvface-b",
@@ -231,12 +252,31 @@ def download_person_vehicle_model(root: Path | None = None, progress: ProgressCa
     return _download_one(PERSON_VEHICLE_MODEL, directory, progress, None)
 
 
+def required_semantic_models(root: Path | None = None) -> tuple[Path, ...]:
+    directories = [root] if root is not None else [models_dir(), packaged_models_dir()]
+    paths = []
+    for spec in SEMANTIC_FILES:
+        path = next((directory / spec.name for directory in directories if directory is not None
+                     and is_valid_model(directory / spec.name, spec, verify_hash=True)), None)
+        if path is None:
+            raise ModelMissingError("缺少或损坏的语义搜索模型。请使用包含语义模型的完整离线 ZIP：" + spec.name)
+        paths.append(path)
+    return tuple(paths)
+
+
+def download_semantic_models(root: Path | None = None, progress: ProgressCallback | None = None) -> tuple[Path, ...]:
+    directory = root or models_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    return tuple(_download_one(spec, directory, progress, None) for spec in SEMANTIC_FILES)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="下载并校验 Face Matching 模型")
     parser.add_argument("command", choices=["download", "verify"])
     parser.add_argument("--profile", choices=sorted(PROFILES), default="lvface-b")
     parser.add_argument("--directory", type=Path)
     parser.add_argument("--person-vehicle", action="store_true", help="仅下载/校验人车检测模型")
+    parser.add_argument("--semantic", action="store_true", help="仅下载/校验中文语义搜索模型和词表")
     args = parser.parse_args(argv)
 
     def show(name: str, done: int, total: int) -> None:
@@ -246,6 +286,13 @@ def main(argv: list[str] | None = None) -> int:
             print()
 
     try:
+        if args.semantic:
+            if args.command == "download":
+                download_semantic_models(args.directory, show)
+            else:
+                required_semantic_models(args.directory)
+            print("语义搜索模型已就绪。")
+            return 0
         if args.person_vehicle:
             if args.command == "download":
                 download_person_vehicle_model(args.directory, show)
